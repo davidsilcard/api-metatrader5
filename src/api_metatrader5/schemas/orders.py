@@ -42,7 +42,7 @@ class OrderRequestBase(BaseModel):
     stop_loss: float | None = Field(default=None, gt=0)
     take_profit: float | None = Field(default=None, gt=0)
     deviation: int | None = Field(default=None, ge=0, le=500)
-    time_in_force: TimeInForce = TimeInForce.gtc
+    time_in_force: TimeInForce = TimeInForce.day
     filling_type: FillingType = FillingType.auto
     expiration: datetime | None = None
     comment: str | None = Field(default=None, max_length=64)
@@ -74,6 +74,7 @@ class OrderPreviewResponse(BaseModel):
     check_completed: bool
     order_request: dict[str, Any]
     result: dict[str, Any] | None = None
+    mt5_last_error: dict[str, Any] | None = None
 
 
 class OrderSubmitResponse(BaseModel):
@@ -82,3 +83,4 @@ class OrderSubmitResponse(BaseModel):
     live_sent: bool
     order_request: dict[str, Any]
     result: dict[str, Any] | None = None
+    mt5_last_error: dict[str, Any] | None = None

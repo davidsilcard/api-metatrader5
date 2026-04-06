@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Dict
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +36,36 @@ class Settings(BaseSettings):
     mt5_order_comment_prefix: str = "api-metatrader5"
     mt5_enable_order_send: bool = False
 
+    @field_validator(
+        "mt5_terminal_path",
+        "mt5_server",
+        mode="before",
+    )
+    @classmethod
+    def _empty_string_to_none_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("mt5_login", mode="before")
+    @classmethod
+    def _empty_string_to_none_int(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("mt5_password", mode="before")
+    @classmethod
+    def _empty_string_to_none_secret(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @property
     def hmac_keys(self) -> Dict[str, str]:
         pairs: dict[str, str] = {}
@@ -54,8 +84,9 @@ class Settings(BaseSettings):
 
     @property
     def symbol_alias_map(self) -> Dict[str, str]:
+        raw_aliases = self.mt5_symbol_aliases or ""
         aliases: dict[str, str] = {}
-        for chunk in self.mt5_symbol_aliases.split(","):
+        for chunk in raw_aliases.split(","):
             item = chunk.strip()
             if not item or "=" not in item:
                 continue

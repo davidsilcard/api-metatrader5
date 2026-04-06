@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC
+import re
 
 from ..core.config import Settings
 from ..core.errors import AuthorizationError, MarketDataUnavailableError
@@ -41,6 +42,7 @@ class OrderService:
             check_completed=result is not None,
             order_request=request_data,
             result=result,
+            mt5_last_error=None if result is not None else self.client.last_error(),
         )
 
     def submit_order(self, payload: OrderSubmitRequest) -> OrderSubmitResponse:
@@ -58,6 +60,7 @@ class OrderService:
             live_sent=True,
             order_request=request_data,
             result=result,
+            mt5_last_error=None if result is not None else self.client.last_error(),
         )
 
     def _build_mt5_order_request(
@@ -109,8 +112,10 @@ class OrderService:
             chunks.append(payload.client_order_id)
         if payload.comment:
             chunks.append(payload.comment)
-        comment = "|".join(chunk.strip() for chunk in chunks if chunk and chunk.strip())
-        return comment[:64]
+        comment = "-".join(chunk.strip() for chunk in chunks if chunk and chunk.strip())
+        comment = re.sub(r"[^A-Za-z0-9._ -]+", "-", comment).strip()
+        comment = re.sub(r"\s+", " ", comment)
+        return comment[:20]
 
     def _map_trade_action(self, order_type: OrderType) -> int:
         if order_type == OrderType.market:
@@ -140,15 +145,27 @@ class OrderService:
 
     def _map_filling_type(self, filling_type: FillingType, symbol_info: dict[str, object]) -> int:
         if filling_type == FillingType.auto:
-            symbol_fill = symbol_info.get("filling_mode")
-            if symbol_fill is not None:
-                return int(symbol_fill)
-            fallback_names = ("ORDER_FILLING_RETURN", "ORDER_FILLING_IOC", "ORDER_FILLING_FOK")
+            # symbol_info.filling_mode usa flags SYMBOL_FILLING_*, nao os enums
+            # ORDER_FILLING_* aceitos no request.
+            pending_default = self._try_constant("ORDER_FILLING_RETURN")
+            if pending_default is not None:
+                return pending_default
+
+            fill_flags = int(symbol_info.get("filling_mode") or 0)
+            if fill_flags & 2:
+                ioc = self._try_constant("ORDER_FILLING_IOC")
+                if ioc is not None:
+                    return ioc
+            if fill_flags & 1:
+                fok = self._try_constant("ORDER_FILLING_FOK")
+                if fok is not None:
+                    return fok
+
+            fallback_names = ("ORDER_FILLING_IOC", "ORDER_FILLING_FOK", "ORDER_FILLING_RETURN")
             for constant_name in fallback_names:
-                try:
-                    return self.client.get_constant(constant_name)
-                except Exception:
-                    continue
+                value = self._try_constant(constant_name)
+                if value is not None:
+                    return value
             raise MarketDataUnavailableError("Unable to determine order filling type for symbol.")
 
         name_map = {
@@ -157,3 +174,9 @@ class OrderService:
             FillingType.return_value: "ORDER_FILLING_RETURN",
         }
         return self.client.get_constant(name_map[filling_type])
+
+    def _try_constant(self, name: str) -> int | None:
+        try:
+            return self.client.get_constant(name)
+        except Exception:
+            return None

@@ -142,6 +142,12 @@ POST /internal/v1/orders/preview
 uv run pytest -q
 ```
 
+## Integracao com a VPS
+
+Referencia pratica para o backend Flask assinar chamadas HMAC:
+
+- `docs/flask-edge-integration.md`
+
 ## Próximas etapas
 
 - integrar este gateway à edge API da VPS

@@ -34,7 +34,7 @@ class MarketDataService:
     def get_quote(self, *, symbol: str, include_raw: bool = True) -> QuoteResponse:
         requested_symbol = self._normalize_symbol(symbol)
         resolved_symbol, symbol_info = self._resolve_symbol_info(requested_symbol)
-        tick_info = self.client.symbol_info_tick(resolved_symbol)
+        tick_info = self._get_tick_with_select_retry(resolved_symbol)
         if not tick_info:
             raise MarketDataUnavailableError(
                 "No tick data available for symbol.",
@@ -134,6 +134,30 @@ class MarketDataService:
             "Symbol not found in MetaTrader5.",
             details={"symbol": requested_symbol},
         )
+
+    def _get_tick_with_select_retry(self, symbol: str) -> dict[str, Any] | None:
+        tick_info = self.client.symbol_info_tick(symbol)
+        if tick_info and self._has_meaningful_tick(tick_info):
+            return tick_info
+
+        self.client.symbol_select(symbol, True)
+        tick_info = self.client.symbol_info_tick(symbol)
+        if tick_info and self._has_meaningful_tick(tick_info):
+            return tick_info
+        return None
+
+    @staticmethod
+    def _has_meaningful_tick(tick_info: dict[str, Any]) -> bool:
+        time_value = MarketDataService._as_int(tick_info.get("time"))
+        time_msc = MarketDataService._as_int(tick_info.get("time_msc"))
+        if (time_msc or 0) > 0 or (time_value or 0) > 0:
+            return True
+
+        bid = MarketDataService._as_float(tick_info.get("bid")) or 0.0
+        ask = MarketDataService._as_float(tick_info.get("ask")) or 0.0
+        last = MarketDataService._as_float(tick_info.get("last")) or 0.0
+        volume_real = MarketDataService._as_float(tick_info.get("volume_real")) or 0.0
+        return any(value > 0 for value in (bid, ask, last, volume_real))
 
     @staticmethod
     def _normalize_symbol(symbol: str) -> str:
