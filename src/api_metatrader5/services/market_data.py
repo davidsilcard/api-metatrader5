@@ -4,8 +4,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..core.config import Settings
-from ..core.errors import MarketDataUnavailableError, SymbolNotFoundError
-from ..schemas.market import QuoteResponse, SymbolSearchItem
+from ..core.errors import AppError, MarketDataUnavailableError, SymbolNotFoundError
+from ..schemas.market import BatchQuoteItem, BatchQuoteResponse, QuoteResponse, SymbolSearchItem
 from .mt5_client import Mt5ClientProtocol
 
 
@@ -16,19 +16,26 @@ class MarketDataService:
 
     def readiness(self) -> dict[str, Any]:
         try:
-            terminal = self.client.terminal_info()
-            account = self.client.account_info()
+            self.client.ensure_connected()
         except Exception as exc:
             return {
                 "status": "not_ready",
                 "mt5_connected": False,
-                "details": {"exception_type": exc.__class__.__name__, "message": str(exc)},
+                "mt5_state": "error",
+                "details": {
+                    "exception_type": exc.__class__.__name__,
+                    "message": str(exc),
+                },
             }
+
+        status = self.client.connection_status()
         return {
             "status": "ready",
-            "mt5_connected": True,
-            "terminal": terminal,
-            "account": account,
+            "mt5_connected": bool(status.get("connected")),
+            "mt5_state": status.get("state", "connected"),
+            "reconnect_count": status.get("reconnect_count", 0),
+            "last_connected_at": status.get("last_connected_at"),
+            "last_error": status.get("last_error"),
         }
 
     def get_quote(self, *, symbol: str, include_raw: bool = True) -> QuoteResponse:
@@ -95,6 +102,47 @@ class MarketDataService:
                 )
             )
         return items
+
+    def get_quotes_batch(self, *, symbols: list[str], include_raw: bool) -> BatchQuoteResponse:
+        items: list[BatchQuoteItem] = []
+        success_count = 0
+        error_count = 0
+        for symbol in symbols:
+            requested_symbol = self._normalize_symbol(symbol)
+            try:
+                quote = self.get_quote(symbol=symbol, include_raw=include_raw)
+            except AppError as exc:
+                error_count += 1
+                items.append(
+                    BatchQuoteItem(
+                        requested_symbol=requested_symbol,
+                        ok=False,
+                        quote=None,
+                        error={
+                            "code": exc.code,
+                            "message": exc.message,
+                            "details": exc.details,
+                        },
+                    )
+                )
+                continue
+
+            success_count += 1
+            items.append(
+                BatchQuoteItem(
+                    requested_symbol=requested_symbol,
+                    ok=True,
+                    quote=quote,
+                    error=None,
+                )
+            )
+
+        return BatchQuoteResponse(
+            items=items,
+            count_total=len(items),
+            count_success=success_count,
+            count_error=error_count,
+        )
 
     def resolve_symbol_name(self, symbol: str) -> str:
         requested_symbol = self._normalize_symbol(symbol)

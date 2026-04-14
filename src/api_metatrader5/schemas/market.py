@@ -37,9 +37,24 @@ class BatchQuoteRequest(BaseModel):
     include_raw: bool = True
 
 
+class BatchQuoteError(BaseModel):
+    code: str
+    message: str
+    details: dict[str, Any] | None = None
+
+
+class BatchQuoteItem(BaseModel):
+    requested_symbol: str
+    ok: bool
+    quote: QuoteResponse | None = None
+    error: BatchQuoteError | None = None
+
+
 class BatchQuoteResponse(BaseModel):
-    items: list[QuoteResponse]
-    count: int
+    items: list[BatchQuoteItem]
+    count_total: int
+    count_success: int
+    count_error: int
 
 
 class SymbolSearchItem(BaseModel):

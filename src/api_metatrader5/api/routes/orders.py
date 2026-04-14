@@ -10,20 +10,20 @@ from ...schemas.orders import (
     OrderSubmitRequest,
     OrderSubmitResponse,
 )
-from ...security.hmac_auth import verify_hmac_request
+from ...security.hmac_auth import require_hmac_scopes
 from ...services.order_service import OrderService
 
 
 router = APIRouter(
     prefix="/internal/v1/orders",
     tags=["orders"],
-    dependencies=[Depends(verify_hmac_request)],
 )
 
 
 @router.post("/preview", response_model=OrderPreviewResponse)
 def preview_order(
     payload: OrderPreviewRequest,
+    _auth=Depends(require_hmac_scopes("orders:preview")),
     _settings: Settings = Depends(get_settings),
     order_service: OrderService = Depends(get_order_service),
 ) -> OrderPreviewResponse:
@@ -33,6 +33,7 @@ def preview_order(
 @router.post("", response_model=OrderSubmitResponse)
 def submit_order(
     payload: OrderSubmitRequest,
+    _auth=Depends(require_hmac_scopes("orders:send")),
     _settings: Settings = Depends(get_settings),
     order_service: OrderService = Depends(get_order_service),
 ) -> OrderSubmitResponse:

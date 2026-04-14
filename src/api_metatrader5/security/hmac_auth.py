@@ -11,7 +11,7 @@ from fastapi import Depends, Request
 
 from ..api.dependencies import get_settings
 from ..core.config import Settings
-from ..core.errors import AuthenticationError
+from ..core.errors import AuthenticationError, AuthorizationError
 
 
 def sha256_hex(payload: bytes) -> str:
@@ -45,6 +45,13 @@ def sign_message(secret: str, canonical_message: str) -> str:
         canonical_message.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
+
+
+@dataclass(frozen=True)
+class HmacAuthContext:
+    key_id: str
+    scopes: frozenset[str]
+    timestamp: int
 
 
 @dataclass
@@ -85,7 +92,7 @@ def _get_nonce_store(settings: Settings) -> NonceStore:
 async def verify_hmac_request(
     request: Request,
     settings: Settings = Depends(get_settings),
-) -> None:
+) -> HmacAuthContext:
     key_id = (request.headers.get("X-Key-Id") or "").strip()
     timestamp_text = (request.headers.get("X-Timestamp") or "").strip()
     nonce = (request.headers.get("X-Nonce") or "").strip()
@@ -123,3 +130,27 @@ async def verify_hmac_request(
 
     nonce_store = _get_nonce_store(settings)
     nonce_store.remember(key_id, nonce)
+    scopes = frozenset(settings.hmac_scopes.get(key_id, set()))
+    auth_context = HmacAuthContext(key_id=key_id, scopes=scopes, timestamp=timestamp_value)
+    request.state.hmac_auth = auth_context
+    return auth_context
+
+
+def require_hmac_scopes(*required_scopes: str):
+    async def _require_scope(
+        auth: HmacAuthContext = Depends(verify_hmac_request),
+    ) -> HmacAuthContext:
+        if "*" in auth.scopes:
+            return auth
+        for scope in required_scopes:
+            if scope in auth.scopes:
+                return auth
+        raise AuthorizationError(
+            "HMAC key is authenticated but not authorized for this endpoint.",
+            details={
+                "key_id": auth.key_id,
+                "required_scopes": list(required_scopes),
+            },
+        )
+
+    return _require_scope

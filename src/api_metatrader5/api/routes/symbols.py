@@ -5,14 +5,14 @@ from fastapi import APIRouter, Depends, Query
 from ..dependencies import get_market_data_service, get_settings
 from ...core.config import Settings
 from ...schemas.market import SymbolSearchResponse
-from ...security.hmac_auth import verify_hmac_request
+from ...security.hmac_auth import require_hmac_scopes
 from ...services.market_data import MarketDataService
 
 
 router = APIRouter(
     prefix="/internal/v1/symbols",
     tags=["symbols"],
-    dependencies=[Depends(verify_hmac_request)],
+    dependencies=[Depends(require_hmac_scopes("symbols:read"))],
 )
 
 

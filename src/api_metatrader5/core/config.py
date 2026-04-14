@@ -21,12 +21,17 @@ class Settings(BaseSettings):
     app_log_level: str = "INFO"
     app_host: str = "127.0.0.1"
     app_port: int = 8000
+    app_log_file: str | None = None
+    app_log_max_bytes: int = 10 * 1024 * 1024
+    app_log_backup_count: int = 5
 
     hmac_shared_keys: str = ""
+    hmac_key_scopes: str = ""
     hmac_allowed_clock_skew_seconds: int = 30
     hmac_nonce_ttl_seconds: int = 300
     mt5_gateway_key_id: str = "edge-1"
     mt5_gateway_shared_secret: SecretStr | None = None
+    mt5_gateway_scopes: str = "quotes:read,symbols:read,orders:preview"
 
     mt5_terminal_path: str | None = None
     mt5_login: int | None = None
@@ -37,10 +42,14 @@ class Settings(BaseSettings):
     mt5_magic_number: int = 500001
     mt5_order_comment_prefix: str = "api-metatrader5"
     mt5_enable_order_send: bool = False
+    mt5_reconnect_max_attempts: int = 3
+    mt5_reconnect_backoff_seconds: float = 1.0
+    mt5_connection_probe_interval_seconds: int = 5
 
     @field_validator(
         "mt5_terminal_path",
         "mt5_server",
+        "app_log_file",
         mode="before",
     )
     @classmethod
@@ -110,6 +119,21 @@ class Settings(BaseSettings):
         )
 
     @property
+    def hmac_scopes(self) -> Dict[str, set[str]]:
+        parsed = self._parse_scope_mapping(self.hmac_key_scopes, item_separator="|")
+        if parsed:
+            return parsed
+
+        if (self.hmac_shared_keys or "").strip():
+            return {key_id: {"*"} for key_id in self.hmac_keys}
+
+        if self.mt5_gateway_shared_secret is not None:
+            scopes = self._parse_scope_list(self.mt5_gateway_scopes)
+            return {self.mt5_gateway_key_id: scopes or {"quotes:read", "symbols:read"}}
+
+        return {key_id: {"*"} for key_id in self.hmac_keys}
+
+    @property
     def symbol_alias_map(self) -> Dict[str, str]:
         raw_aliases = self.mt5_symbol_aliases or ""
         aliases: dict[str, str] = {}
@@ -123,6 +147,25 @@ class Settings(BaseSettings):
             if public_symbol and broker_symbol:
                 aliases[public_symbol] = broker_symbol
         return aliases
+
+    @staticmethod
+    def _parse_scope_mapping(raw: str, *, item_separator: str) -> Dict[str, set[str]]:
+        mapping: dict[str, set[str]] = {}
+        for chunk in (raw or "").split(","):
+            item = chunk.strip()
+            if not item or "=" not in item:
+                continue
+            key_id, scopes_text = item.split("=", 1)
+            key_id = key_id.strip()
+            scopes = Settings._parse_scope_list(scopes_text, separator=item_separator)
+            if key_id and scopes:
+                mapping[key_id] = scopes
+        return mapping
+
+    @staticmethod
+    def _parse_scope_list(raw: str, *, separator: str = ",") -> set[str]:
+        scopes = {part.strip() for part in (raw or "").split(separator) if part.strip()}
+        return scopes
 
 
 @lru_cache(maxsize=1)

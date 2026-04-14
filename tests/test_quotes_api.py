@@ -16,6 +16,15 @@ class FakeMt5Client:
     def shutdown(self) -> None:
         return None
 
+    def connection_status(self):
+        return {
+            "connected": True,
+            "state": "connected",
+            "reconnect_count": 2,
+            "last_connected_at": 1712350000.0,
+            "last_error": None,
+        }
+
     def last_error(self):
         return {"code": 0, "message": "ok"}
 
@@ -26,6 +35,8 @@ class FakeMt5Client:
         return {"login": 123}
 
     def symbols_get(self, group=None):
+        if group and "INVALID1" in group:
+            return []
         return [
             {
                 "name": "BBDCG189",
@@ -72,7 +83,7 @@ class FakeMt5Client:
         return None
 
     def symbol_select(self, symbol, enable):
-        return True
+        return symbol in {"BBDCG189", "BBDCG189F"}
 
     def order_check(self, request_data):
         return {"retcode": 0, "comment": "ok", "request": request_data}
@@ -122,22 +133,30 @@ def auth_headers(*, secret: str, method: str, path: str, query: str = "", body: 
     }
 
 
-def test_ready_endpoint_does_not_require_hmac() -> None:
+def test_ready_endpoint_does_not_require_hmac_and_is_minimal() -> None:
     settings = Settings(hmac_shared_keys="edge-1=super-secret")
     app = create_test_app(settings=settings, mt5_client=FakeMt5Client())
     client = TestClient(app)
 
     response = client.get("/ready")
     assert response.status_code == 200
-    assert response.json()["status"] == "ready"
+    payload = response.json()
+    assert payload["status"] == "ready"
+    assert payload["mt5_connected"] is True
+    assert payload["mt5_state"] == "connected"
+    assert "terminal" not in payload
+    assert "account" not in payload
 
 
-def test_batch_quotes_returns_multiple_items() -> None:
-    settings = Settings(hmac_shared_keys="edge-1=super-secret")
+def test_batch_quotes_returns_partial_success() -> None:
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        hmac_key_scopes="edge-1=quotes:read|symbols:read|orders:preview",
+    )
     app = create_test_app(settings=settings, mt5_client=FakeMt5Client())
     client = TestClient(app)
 
-    body = b'{"symbols":["BBDCG189","BBDCG189F"],"include_raw":false}'
+    body = b'{"symbols":["BBDCG189","INVALID1"],"include_raw":false}'
     headers = auth_headers(
         secret="super-secret",
         method="POST",
@@ -153,12 +172,20 @@ def test_batch_quotes_returns_multiple_items() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["count"] == 2
-    assert payload["items"][0]["raw_tick"] is None
+    assert payload["count_total"] == 2
+    assert payload["count_success"] == 1
+    assert payload["count_error"] == 1
+    assert payload["items"][0]["ok"] is True
+    assert payload["items"][0]["quote"]["raw_tick"] is None
+    assert payload["items"][1]["ok"] is False
+    assert payload["items"][1]["error"]["code"] == "symbol_not_found"
 
 
 def test_search_symbols_uses_query() -> None:
-    settings = Settings(hmac_shared_keys="edge-1=super-secret")
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        hmac_key_scopes="edge-1=quotes:read|symbols:read",
+    )
     app = create_test_app(settings=settings, mt5_client=FakeMt5Client())
     client = TestClient(app)
 

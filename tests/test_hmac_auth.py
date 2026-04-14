@@ -16,6 +16,15 @@ class FakeMt5Client:
     def shutdown(self) -> None:
         return None
 
+    def connection_status(self):
+        return {
+            "connected": True,
+            "state": "connected",
+            "reconnect_count": 0,
+            "last_connected_at": 1712350000.0,
+            "last_error": None,
+        }
+
     def last_error(self):
         return {"code": 0, "message": "ok"}
 
@@ -128,8 +137,11 @@ def test_quotes_endpoint_requires_valid_hmac() -> None:
     assert response.status_code == 401
 
 
-def test_quotes_endpoint_accepts_valid_hmac() -> None:
-    settings = Settings(hmac_shared_keys="edge-1=super-secret")
+def test_quotes_endpoint_accepts_valid_hmac_with_scope() -> None:
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        hmac_key_scopes="edge-1=quotes:read|symbols:read",
+    )
     app = create_test_app(settings=settings, mt5_client=FakeMt5Client())
     client = TestClient(app)
 
@@ -142,11 +154,38 @@ def test_quotes_endpoint_accepts_valid_hmac() -> None:
     assert payload["ask"] == 1.91
 
 
+def test_orders_endpoint_rejects_key_without_send_scope() -> None:
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        hmac_key_scopes="edge-1=quotes:read|orders:preview",
+        mt5_enable_order_send=True,
+    )
+    app = create_test_app(settings=settings, mt5_client=FakeMt5Client())
+    client = TestClient(app)
+
+    body = (
+        b'{"symbol":"BBDCG189","side":"buy","order_type":"market","volume":1,'
+        b'"client_order_id":"oid-1"}'
+    )
+    headers = build_headers(
+        "super-secret",
+        method="POST",
+        path="/internal/v1/orders",
+        body=body,
+    )
+    headers["Content-Type"] = "application/json"
+    response = client.post("/internal/v1/orders", headers=headers, content=body)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+
+
 def test_quotes_endpoint_accepts_mt5_gateway_secret_fallback() -> None:
     settings = Settings(
         hmac_shared_keys="",
         mt5_gateway_key_id="consumer-app",
         mt5_gateway_shared_secret="super-secret",
+        mt5_gateway_scopes="quotes:read,symbols:read",
     )
     app = create_test_app(settings=settings, mt5_client=FakeMt5Client())
     client = TestClient(app)

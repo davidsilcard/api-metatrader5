@@ -161,6 +161,18 @@ MT5_GATEWAY_SHARED_SECRET=troque-por-um-segredo-forte
 
 Se você precisar manter mais de uma chave ativa ao mesmo tempo, use `HMAC_SHARED_KEYS`.
 
+Se o gateway usar autorização por escopo, alinhe também:
+
+```bash
+MT5_GATEWAY_SCOPES=quotes:read,symbols:read,orders:preview
+```
+
+Ou, no modo multi-chave do gateway:
+
+```bash
+HMAC_KEY_SCOPES=edge-1=quotes:read|symbols:read|orders:preview
+```
+
 ## Regras operacionais
 
 - nunca coloque o segredo HMAC no frontend
@@ -168,6 +180,15 @@ Se você precisar manter mais de uma chave ativa ao mesmo tempo, use `HMAC_SHARE
 - use rede privada entre VPS e Windows
 - gere um `nonce` unico por requisicao
 - valide o relogio da VPS e da maquina Windows com NTP
+- opere o gateway como servico do Windows com auto-start e restart automatico
+- bind do gateway apenas no IP privado da malha `Tailscale` ou `WireGuard`
+- bloqueie acesso fora da rede privada no firewall
+- mantenha o arquivo `.env` fora do repositorio
+- siga liberacao em fases antes de ativar ordens reais
+
+Para o checklist completo de deploy e operacao:
+
+- `docs/deploy-operacao.md`
 
 ## Comportamento observado na validacao real
 

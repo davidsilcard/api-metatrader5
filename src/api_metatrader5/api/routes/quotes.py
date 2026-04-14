@@ -5,14 +5,14 @@ from fastapi import APIRouter, Depends, Query
 from ..dependencies import get_market_data_service, get_settings
 from ...core.config import Settings
 from ...schemas.market import BatchQuoteRequest, BatchQuoteResponse, QuoteResponse
-from ...security.hmac_auth import verify_hmac_request
+from ...security.hmac_auth import require_hmac_scopes
 from ...services.market_data import MarketDataService
 
 
 router = APIRouter(
     prefix="/internal/v1/quotes",
     tags=["quotes"],
-    dependencies=[Depends(verify_hmac_request)],
+    dependencies=[Depends(require_hmac_scopes("quotes:read"))],
 )
 
 
@@ -32,8 +32,7 @@ def get_quotes_batch(
     _settings: Settings = Depends(get_settings),
     market_data_service: MarketDataService = Depends(get_market_data_service),
 ) -> BatchQuoteResponse:
-    items = [
-        market_data_service.get_quote(symbol=symbol, include_raw=payload.include_raw)
-        for symbol in payload.symbols
-    ]
-    return BatchQuoteResponse(items=items, count=len(items))
+    return market_data_service.get_quotes_batch(
+        symbols=payload.symbols,
+        include_raw=payload.include_raw,
+    )
