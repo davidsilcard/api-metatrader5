@@ -56,6 +56,57 @@ uv run uvicorn api_metatrader5.app:create_app --factory --host 127.0.0.1 --port 
 Para desenvolvimento local, `127.0.0.1` e aceito.
 Em produção, use o IP privado da malha `Tailscale` ou `WireGuard` e bloqueie acesso publico.
 
+## Rotina operacional
+
+Scripts PowerShell para operação manual no Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-gateway.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-gateway.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\restart-gateway.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\status-gateway.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\check-gateway.ps1
+```
+
+Os scripts usam o `.env` atual, gravam logs em `logs\` e reutilizam o bind configurado em `APP_HOST` e `APP_PORT`.
+
+Para rodar como serviço Windows com auto-start e restart automático, use `NSSM`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-gateway-service.ps1 -NssmPath 'C:\caminho\para\nssm.exe'
+powershell -ExecutionPolicy Bypass -File .\scripts\service-status.ps1
+```
+
+Estado operacional validado neste ambiente:
+
+- serviço Windows: `mt5-gateway`
+- startup: `Auto`
+- bind operacional: `http://100.70.177.96:8000`
+- health check:
+  - `GET /health` => `200`
+  - `GET /ready` => `200`
+
+Comandos operacionais principais:
+
+```powershell
+Start-Service mt5-gateway
+Stop-Service mt5-gateway
+Restart-Service mt5-gateway
+powershell -ExecutionPolicy Bypass -File .\scripts\service-status.ps1
+Invoke-RestMethod http://100.70.177.96:8000/health | ConvertTo-Json -Depth 6
+Invoke-RestMethod http://100.70.177.96:8000/ready | ConvertTo-Json -Depth 6
+& 'C:\Program Files\Tailscale\tailscale.exe' ip -4
+```
+
+Firewall operacional recomendado e aplicado:
+
+- regra: `mt5-gateway-tailscale-8000`
+- direção: `Inbound`
+- ação: `Allow`
+- perfil: `Private`
+- destino: `TCP 8000`
+- origem esperada: VPS `100.109.190.88`
+
 ## Autenticação HMAC
 
 O gateway aceita duas formas de configurar o segredo:

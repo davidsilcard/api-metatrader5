@@ -26,12 +26,76 @@ Opcao pratica:
 - `WinSW`
 - `Task Scheduler` somente se o fluxo for simples e bem testado
 
+### Padrao recomendado: NSSM
+
+Quando o `NSSM` estiver instalado, use os scripts do repositorio em PowerShell administrativo:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-gateway-service.ps1 -NssmPath 'C:\caminho\para\nssm.exe'
+powershell -ExecutionPolicy Bypass -File .\scripts\service-status.ps1
+```
+
+Remocao do servico:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\remove-gateway-service.ps1 -NssmPath 'C:\caminho\para\nssm.exe'
+```
+
+O instalador configura:
+
+- startup automatico no boot
+- restart automatico em falha
+- logs em `logs\mt5-gateway-stdout.log` e `logs\mt5-gateway-stderr.log`
+- bind conforme `APP_HOST` e `APP_PORT` do `.env`
+
+### Estado operacional validado
+
+Configuracao confirmada neste ambiente:
+
+- servico: `mt5-gateway`
+- startup: `Auto`
+- URL privada ativa: `http://100.70.177.96:8000`
+- `GET /health`: `200`
+- `GET /ready`: `200`
+
+Comandos uteis em PowerShell administrativo:
+
+```powershell
+Start-Service mt5-gateway
+Stop-Service mt5-gateway
+Restart-Service mt5-gateway
+Get-CimInstance Win32_Service -Filter "Name='mt5-gateway'" | Select-Object Name,State,StartMode,PathName
+Invoke-RestMethod http://100.70.177.96:8000/health | ConvertTo-Json -Depth 6
+Invoke-RestMethod http://100.70.177.96:8000/ready | ConvertTo-Json -Depth 6
+& 'C:\Program Files\Tailscale\tailscale.exe' ip -4
+```
+
 Requisitos operacionais:
 
 - iniciar junto com o boot
 - reiniciar automaticamente em caso de falha
 - registrar logs em arquivo
 - permitir `start`, `stop`, `restart` e `status`
+
+## Rotina manual padrao
+
+Enquanto o servico definitivo nao estiver configurado, use estes scripts do repositorio:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-gateway.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-gateway.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\restart-gateway.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\status-gateway.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\check-gateway.ps1
+```
+
+Comportamento esperado:
+
+- `start`: sobe o `uvicorn` com o bind do `.env` e grava PID em `logs\mt5-gateway.pid`
+- `stop`: encerra o processo salvo no PID
+- `restart`: reaplica `stop` seguido de `start`
+- `status`: mostra URL atual, PID, health e IP do `Tailscale` quando disponivel
+- `check`: faz verificacao rapida de `health` e `ready`
 
 ## Auto-start no boot
 
@@ -77,6 +141,15 @@ Checklist:
 - restringir a origem aos IPs da VPS ou da malha privada
 - bloquear outras origens por padrao
 - validar que a porta nao responde na internet publica
+
+Regra aplicada neste ambiente:
+
+- nome: `mt5-gateway-tailscale-8000`
+- direcao: `Inbound`
+- acao: `Allow`
+- perfil: `Private`
+- porta local: `TCP 8000`
+- origem esperada: VPS `100.109.190.88`
 
 ## Segredos e .env
 
