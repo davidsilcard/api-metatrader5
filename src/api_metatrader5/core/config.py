@@ -22,9 +22,11 @@ class Settings(BaseSettings):
     app_host: str = "127.0.0.1"
     app_port: int = 8000
 
-    hmac_shared_keys: str = "edge-1=change-this-secret"
+    hmac_shared_keys: str = ""
     hmac_allowed_clock_skew_seconds: int = 30
     hmac_nonce_ttl_seconds: int = 300
+    mt5_gateway_key_id: str = "edge-1"
+    mt5_gateway_shared_secret: SecretStr | None = None
 
     mt5_terminal_path: str | None = None
     mt5_login: int | None = None
@@ -66,6 +68,23 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("mt5_gateway_key_id", mode="before")
+    @classmethod
+    def _normalize_gateway_key_id(cls, value: object) -> str:
+        if value is None:
+            return "edge-1"
+        text = str(value).strip()
+        return text or "edge-1"
+
+    @field_validator("mt5_gateway_shared_secret", mode="before")
+    @classmethod
+    def _empty_gateway_secret_to_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @property
     def hmac_keys(self) -> Dict[str, str]:
         pairs: dict[str, str] = {}
@@ -78,9 +97,17 @@ class Settings(BaseSettings):
             secret = secret.strip()
             if key_id and secret:
                 pairs[key_id] = secret
-        if not pairs:
-            raise ValueError("Configure ao menos uma chave em HMAC_SHARED_KEYS.")
-        return pairs
+        if pairs:
+            return pairs
+
+        if self.mt5_gateway_shared_secret is not None:
+            secret = self.mt5_gateway_shared_secret.get_secret_value().strip()
+            if secret:
+                return {self.mt5_gateway_key_id: secret}
+
+        raise ValueError(
+            "Configure HMAC_SHARED_KEYS ou MT5_GATEWAY_SHARED_SECRET para autenticar endpoints /internal."
+        )
 
     @property
     def symbol_alias_map(self) -> Dict[str, str]:

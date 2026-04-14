@@ -91,7 +91,15 @@ class FakeMt5Client:
         return constants[name]
 
 
-def build_headers(secret: str, *, method: str, path: str, query: str = "", body: bytes = b"") -> dict[str, str]:
+def build_headers(
+    secret: str,
+    *,
+    method: str,
+    path: str,
+    key_id: str = "edge-1",
+    query: str = "",
+    body: bytes = b"",
+) -> dict[str, str]:
     timestamp = str(int(time.time()))
     nonce = f"nonce-{time.time_ns()}"
     canonical = build_canonical_message(
@@ -104,7 +112,7 @@ def build_headers(secret: str, *, method: str, path: str, query: str = "", body:
     )
     signature = sign_message(secret, canonical)
     return {
-        "X-Key-Id": "edge-1",
+        "X-Key-Id": key_id,
         "X-Timestamp": timestamp,
         "X-Nonce": nonce,
         "X-Signature": signature,
@@ -132,3 +140,25 @@ def test_quotes_endpoint_accepts_valid_hmac() -> None:
     payload = response.json()
     assert payload["symbol"] == "BBDCG189"
     assert payload["ask"] == 1.91
+
+
+def test_quotes_endpoint_accepts_mt5_gateway_secret_fallback() -> None:
+    settings = Settings(
+        hmac_shared_keys="",
+        mt5_gateway_key_id="consumer-app",
+        mt5_gateway_shared_secret="super-secret",
+    )
+    app = create_test_app(settings=settings, mt5_client=FakeMt5Client())
+    client = TestClient(app)
+
+    headers = build_headers(
+        "super-secret",
+        method="GET",
+        path="/internal/v1/quotes/BBDCG189",
+        key_id="consumer-app",
+    )
+    response = client.get("/internal/v1/quotes/BBDCG189", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["symbol"] == "BBDCG189"

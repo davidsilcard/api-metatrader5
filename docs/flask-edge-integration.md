@@ -152,6 +152,15 @@ MT5_GATEWAY_KEY_ID=edge-1
 MT5_GATEWAY_SHARED_SECRET=troque-por-um-segredo-forte
 ```
 
+No gateway Windows, a mesma chave pode ser configurada de forma simples com:
+
+```bash
+MT5_GATEWAY_KEY_ID=edge-1
+MT5_GATEWAY_SHARED_SECRET=troque-por-um-segredo-forte
+```
+
+Se você precisar manter mais de uma chave ativa ao mesmo tempo, use `HMAC_SHARED_KEYS`.
+
 ## Regras operacionais
 
 - nunca coloque o segredo HMAC no frontend

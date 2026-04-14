@@ -53,6 +53,13 @@ uv run uvicorn api_metatrader5.app:create_app --factory --host 127.0.0.1 --port 
 
 ## Autenticação HMAC
 
+O gateway aceita duas formas de configurar o segredo:
+
+- simples, para um único consumidor: `MT5_GATEWAY_KEY_ID` + `MT5_GATEWAY_SHARED_SECRET`
+- avançada, para rotação ou múltiplas chaves: `HMAC_SHARED_KEYS`
+
+Se `HMAC_SHARED_KEYS` estiver definido, ele tem precedência.
+
 Os endpoints em `/internal/*` exigem estes headers:
 
 - `X-Key-Id`
@@ -123,6 +130,8 @@ POST /internal/v1/orders/preview
 - `APP_LOG_LEVEL`
 - `APP_HOST`
 - `APP_PORT`
+- `MT5_GATEWAY_KEY_ID`
+- `MT5_GATEWAY_SHARED_SECRET`
 - `HMAC_SHARED_KEYS`
 - `HMAC_ALLOWED_CLOCK_SKEW_SECONDS`
 - `HMAC_NONCE_TTL_SECONDS`
