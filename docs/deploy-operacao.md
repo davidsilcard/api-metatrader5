@@ -1,41 +1,44 @@
-# Operacao e Deploy do mt5-gateway
+# Operacao e Deploy do BTG Gateway
 
-Este guia resume a forma recomendada de operar o `mt5-gateway` em uma maquina Windows dedicada.
+Este guia resume a forma recomendada de operar o gateway privado em uma máquina Windows dedicada usando `BTG Trader Desk` como backend de mercado.
+
+O nome do serviço e do repositório ainda pode aparecer como `mt5-gateway` por herança histórica, mas a stack atual de dados usa o `BTG Trader Desk`.
 
 ## Objetivo operacional
 
 - expor o gateway apenas para a VPS por rede privada
-- manter o processo resiliente a reboot e queda de sessão
-- evitar dependencia de execucao manual em terminal aberto
-- reduzir superficie de ataque e vazamento de segredos
+- manter o processo resiliente a reboot e queda do aplicativo local
+- evitar dependência de execução manual em terminal aberto
+- reduzir superfície de ataque e vazamento de segredos
 
 ## Topologia recomendada
 
-- `mt5-gateway` roda em uma maquina Windows fisica ou VM dedicada
+- `btg-gateway` roda em uma máquina Windows física ou VM dedicada
+- o `BTG Trader Desk` roda localmente na mesma máquina
 - a VPS consome a API via `Tailscale` ou `WireGuard`
-- a API do gateway deve bindar no IP privado da malha, nao em `0.0.0.0`
-- o acesso publico pela internet deve permanecer bloqueado
+- a API do gateway deve bindar no IP privado da malha, não em `0.0.0.0`
+- o acesso público pela internet deve permanecer bloqueado
 
-## Execucao como servico no Windows
+## Execução como serviço no Windows
 
-Use o gateway como servico do Windows, nao como processo manual em janela aberta.
+Use o gateway como serviço do Windows, não como processo manual em janela aberta.
 
-Opcao pratica:
+Opções práticas:
 
 - `NSSM`
 - `WinSW`
-- `Task Scheduler` somente se o fluxo for simples e bem testado
+- `Task Scheduler` somente se o fluxo for simples e muito bem testado
 
-### Padrao recomendado: NSSM
+### Padrão recomendado: NSSM
 
-Quando o `NSSM` estiver instalado, use os scripts do repositorio em PowerShell administrativo:
+Quando o `NSSM` estiver instalado, use os scripts do repositório em PowerShell administrativo:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-gateway-service.ps1 -NssmPath 'C:\caminho\para\nssm.exe'
 powershell -ExecutionPolicy Bypass -File .\scripts\service-status.ps1
 ```
 
-Remocao do servico:
+Remoção do serviço:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\remove-gateway-service.ps1 -NssmPath 'C:\caminho\para\nssm.exe'
@@ -43,22 +46,28 @@ powershell -ExecutionPolicy Bypass -File .\scripts\remove-gateway-service.ps1 -N
 
 O instalador configura:
 
-- startup automatico no boot
-- restart automatico em falha
+- startup automático no boot
+- restart automático em falha
 - logs em `logs\mt5-gateway-stdout.log` e `logs\mt5-gateway-stderr.log`
 - bind conforme `APP_HOST` e `APP_PORT` do `.env`
 
 ### Estado operacional validado
 
-Configuracao confirmada neste ambiente:
+Configuração confirmada neste ambiente:
 
-- servico: `mt5-gateway`
+- serviço: `mt5-gateway`
 - startup: `Auto`
-- URL privada ativa: `http://100.70.177.96:8000`
+- URL privada validada: `http://100.70.177.96:8000`
 - `GET /health`: `200`
 - `GET /ready`: `200`
+- `GET /internal/v1/metrics`: presente e protegido por HMAC
 
-Comandos uteis em PowerShell administrativo:
+Lição operacional importante:
+
+- se existirem processos antigos iniciados manualmente na mesma porta, eles podem mascarar o comportamento do serviço
+- antes de concluir qualquer validação, confirme o dono da porta `8000`
+
+Comandos úteis em PowerShell administrativo:
 
 ```powershell
 Start-Service mt5-gateway
@@ -68,18 +77,12 @@ Get-CimInstance Win32_Service -Filter "Name='mt5-gateway'" | Select-Object Name,
 Invoke-RestMethod http://100.70.177.96:8000/health | ConvertTo-Json -Depth 6
 Invoke-RestMethod http://100.70.177.96:8000/ready | ConvertTo-Json -Depth 6
 & 'C:\Program Files\Tailscale\tailscale.exe' ip -4
+Get-NetTCPConnection -LocalPort 8000 -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess
 ```
 
-Requisitos operacionais:
+## Rotina manual padrão
 
-- iniciar junto com o boot
-- reiniciar automaticamente em caso de falha
-- registrar logs em arquivo
-- permitir `start`, `stop`, `restart` e `status`
-
-## Rotina manual padrao
-
-Enquanto o servico definitivo nao estiver configurado, use estes scripts do repositorio:
+Enquanto o serviço definitivo não estiver configurado, use estes scripts do repositório:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\start-gateway.ps1
@@ -87,6 +90,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\stop-gateway.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\restart-gateway.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\status-gateway.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\check-gateway.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\diagnose-machine.ps1
 ```
 
 Comportamento esperado:
@@ -94,82 +98,107 @@ Comportamento esperado:
 - `start`: sobe o `uvicorn` com o bind do `.env` e grava PID em `logs\mt5-gateway.pid`
 - `stop`: encerra o processo salvo no PID
 - `restart`: reaplica `stop` seguido de `start`
-- `status`: mostra URL atual, PID, health e IP do `Tailscale` quando disponivel
-- `check`: faz verificacao rapida de `health` e `ready`
+- `status`: mostra URL atual, PID, health e IP do `Tailscale` quando disponível
+- `check`: faz verificação rápida de `health` e `ready`
+- `diagnose-machine`: mostra CPU, memória, top processos e adaptadores de rede
 
-## Auto-start no boot
+## Pré-requisitos do backend BTG
 
-O boot da maquina deve trazer a stack de volta sem intervencao manual.
+Antes de subir o gateway, confirme:
 
-Checklist minimo:
+- `BTG Trader Desk` instalado
+- aplicativo aberto e funcionando na máquina
+- endpoint local do Trader Desk disponível em `127.0.0.1:9099`
+- `BTG_TRADER_DESK_TOKEN` configurado no `.env`
 
-- o Windows sobe normalmente
-- o `MetaTrader 5` abre e faz login
-- o `mt5-gateway` sobe como servico
-- a API reconecta ao terminal quando necessario
-- a VPS consegue consumir a API pela malha privada
-
-## Restart automatico
-
-Configure a politica de restart automatico para o servico da API.
-
-Recomendacoes:
-
-- reiniciar em falha inesperada
-- aplicar atraso curto entre tentativas
-- limitar loops infinitos de restart agressivo
-- registrar a causa da queda antes da retomada
+Sem isso, `/ready` deve cair para `not_ready`.
 
 ## Bind da API
 
-Em producao, o bind deve ser feito apenas no IP privado da rede privada.
+Em produção, o bind deve ser feito apenas no IP privado da rede privada.
 
 Regras:
 
 - desenvolvimento local pode usar `127.0.0.1`
-- producao deve usar o IP privado do `Tailscale` ou `WireGuard`
-- nao exponha o processo diretamente em IP publico
-- nao publique a porta do gateway para a internet aberta
+- produção deve usar o IP privado do `Tailscale` ou `WireGuard`
+- não exponha o processo diretamente em IP público
+- não publique a porta do gateway para a internet aberta
 
 ## Firewall
 
-O firewall do Windows deve aceitar somente o necessario.
+O firewall do Windows deve aceitar somente o necessário.
 
 Checklist:
 
 - liberar apenas a porta usada pelo gateway
 - restringir a origem aos IPs da VPS ou da malha privada
-- bloquear outras origens por padrao
-- validar que a porta nao responde na internet publica
+- bloquear outras origens por padrão
+- validar que a porta não responde na internet pública
 
 Regra aplicada neste ambiente:
 
 - nome: `mt5-gateway-tailscale-8000`
-- direcao: `Inbound`
-- acao: `Allow`
+- direção: `Inbound`
+- ação: `Allow`
 - perfil: `Private`
 - porta local: `TCP 8000`
 - origem esperada: VPS `100.109.190.88`
 
-## Segredos e .env
+## Tuning da máquina dedicada
 
-Regras basicas:
+Objetivo:
 
-- manter `.env` fora do repositorio
+- manter o Windows o mais dedicado possível ao `BTG Trader Desk` e ao gateway
+- reduzir latência e jitter sem abrir mão da segurança
+
+Checklist prático:
+
+- evitar navegador aberto na máquina
+- evitar terminais interativos desnecessários
+- manter apenas o serviço do gateway ativo na porta `8000`
+- preferir `include_raw=false` no consumidor
+- preferir `quotes/batch` em vez de várias chamadas unitárias concorrentes
+- limitar concorrência inicial do consumidor a `5` ou `10`
+
+Diagnóstico sugerido:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\diagnose-machine.ps1
+```
+
+Leitura prática da máquina:
+
+- o maior gargalo atual tende a estar no `BTG Trader Desk`, não no `FastAPI`
+- o antivírus ainda pode afetar a responsividade do Windows
+- para esta máquina, é importante reduzir processos residentes desnecessários
+
+## Segredos e `.env`
+
+Regras básicas:
+
+- manter `.env` fora do repositório
 - nunca commitar segredo HMAC real
-- usar `.env.example` apenas como referencia de variaveis
+- usar `.env.example` apenas como referência
 - trocar segredos antes de qualquer go-live
 
-Checklist de arquivo:
+Checklist mínimo:
 
-- `.env` local presente apenas na maquina que executa o gateway
-- `.gitignore` cobre o arquivo real de ambiente
-- segredo compartilhado forte e unico
-- rotacao planejada para manutencao futura
+- `MT5_GATEWAY_SHARED_SECRET` definido
+- `BTG_TRADER_DESK_TOKEN` definido
+- `APP_HOST` e `APP_PORT` alinhados com o bind desejado
+- `QUOTE_CACHE_TTL_MS` ajustado conforme o perfil do consumidor
 
-## Go-live em fases
+Configuração prática recomendada nesta fase:
 
-Use liberacao progressiva. Nao habilite tudo no primeiro dia.
+```bash
+BTG_TRADER_DESK_HOST=127.0.0.1
+BTG_TRADER_DESK_PORT=9099
+QUOTE_CACHE_TTL_MS=250
+```
+
+## Operação por fases
+
+Use liberação progressiva.
 
 ### Fase 1
 
@@ -178,53 +207,53 @@ Use liberacao progressiva. Nao habilite tudo no primeiro dia.
 - `GET /internal/v1/quotes/{symbol}`
 - `POST /internal/v1/quotes/batch`
 - `GET /internal/v1/symbols/search`
-- `MT5_ENABLE_ORDER_SEND=0`
+- `GET /internal/v1/metrics`
 
 Objetivo:
 
-- validar conectividade, leitura de mercado e estabilidade basica
+- validar conectividade, leitura de mercado e estabilidade básica
 
 ### Fase 2
 
-- habilitar `POST /internal/v1/orders/preview`
-- manter envio real de ordens desabilitado
+- manter consumo real pela VPS
+- ajustar catálogo local de símbolos, se necessário
+- monitorar `p95`, taxa de erro e disponibilidade do backend BTG
 
 Objetivo:
 
-- validar fluxo de preparacao de ordem sem executar trade real
+- estabilizar o consumo em produção privada
 
 ### Fase 3
 
-- habilitar `POST /internal/v1/orders` apenas se a operacao estiver estavel
-- ativar somente depois de alguns dias de observacao sem incidentes
+- investigar e mapear protocolo de ordens do `BTG Trader Desk`
+- só depois reavaliar `orders/preview` e `orders/send`
 
 Objetivo:
 
-- liberar envio real com controle e visibilidade suficientes
+- evoluir o gateway sem quebrar a parte de market data já estabilizada
 
-## Checklist de prontidao
+## Checklist de prontidão
 
-Considere pronto para producao quando tudo abaixo estiver atendido:
+Considere pronto para produção quando tudo abaixo estiver atendido:
 
 - sobe sozinho no boot
 - reinicia sozinho em caso de falha
 - responde somente pela rede privada
-- nao expoe segredos no repositorio
+- não expõe segredos no repositório
 - firewall bloqueia acessos fora da malha
-- `/ready` nao vaza dados sensiveis
-- fluxo de quotes funciona com MT5 real
-- o go-live foi feito por fases
+- `/ready` indica backend conectado
+- fluxo de quotes funciona com ações e opções reais
+- a VPS consegue consumir o gateway com estabilidade
 
-## Ordem recomendada de validacao
+## Ordem recomendada de validação
 
 1. subir o Windows e confirmar auto-start
-2. validar login do `MetaTrader 5`
+2. abrir e validar o `BTG Trader Desk`
 3. validar bind no IP privado
-4. validar firewall e ausencia de exposicao publica
+4. validar firewall e ausência de exposição pública
 5. testar `GET /health`
 6. testar `GET /ready`
-7. testar quote unitario
+7. testar quote unitário
 8. testar batch de quotes
-9. testar simbolos
-10. habilitar preview
-11. habilitar ordens reais somente ao final
+9. testar `metrics`
+10. validar consumo real pela VPS
