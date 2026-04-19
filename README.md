@@ -98,6 +98,34 @@ Ou:
 uv run uvicorn api_metatrader5.app:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
+## Runbook de boot
+
+Depois de reiniciar a máquina Windows, siga esta ordem:
+
+1. abrir o `BTG Trader Desk`
+2. iniciar o serviço do gateway
+3. validar `health`
+4. validar `ready`
+
+Comandos:
+
+```powershell
+Start-Service mt5-gateway
+Get-Service mt5-gateway | Select-Object Name,Status,StartType
+Invoke-RestMethod http://100.70.177.96:8000/health | ConvertTo-Json -Depth 6
+Invoke-RestMethod http://100.70.177.96:8000/ready | ConvertTo-Json -Depth 6
+```
+
+Resultado esperado:
+
+- `Get-Service`: `Status = Running`
+- `/health`: `status = "ok"`
+- `/ready`: `status = "ready"`
+- `/ready`: `provider = "btg_trader_desk"`
+- `/ready`: `connected = true`
+
+Se `/health` responder e `/ready` não ficar `ready`, o primeiro ponto a verificar é se o `BTG Trader Desk` está aberto e funcional.
+
 ## Contrato HTTP
 
 Quote unitário:
