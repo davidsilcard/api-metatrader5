@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import time
 
 from fastapi.testclient import TestClient
@@ -10,6 +11,9 @@ from api_metatrader5.security.hmac_auth import build_canonical_message, sha256_h
 
 
 class FakeMt5Client:
+    def __init__(self) -> None:
+        self.tick_calls = 0
+
     def ensure_connected(self) -> None:
         return None
 
@@ -71,6 +75,7 @@ class FakeMt5Client:
 
     def symbol_info_tick(self, symbol):
         if symbol in {"BBDCG189", "BBDCG189F"}:
+            self.tick_calls += 1
             return {
                 "bid": 1.9,
                 "ask": 1.91,
@@ -201,3 +206,119 @@ def test_search_symbols_uses_query() -> None:
     payload = response.json()
     assert payload["count"] == 1
     assert payload["items"][0]["symbol"] == "BBDCG189"
+
+
+def test_metrics_endpoint_exposes_gateway_snapshot() -> None:
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        hmac_key_scopes="edge-1=quotes:read|symbols:read|metrics:read",
+    )
+    app = create_test_app(settings=settings, mt5_client=FakeMt5Client())
+    client = TestClient(app)
+
+    quote_headers = auth_headers(
+        secret="super-secret",
+        method="GET",
+        path="/internal/v1/quotes/BBDCG189",
+    )
+    quote_response = client.get("/internal/v1/quotes/BBDCG189", headers=quote_headers)
+    assert quote_response.status_code == 200
+
+    metrics_headers = auth_headers(
+        secret="super-secret",
+        method="GET",
+        path="/internal/v1/metrics",
+    )
+    response = client.get("/internal/v1/metrics", headers=metrics_headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["global"]["requests"] >= 2
+    assert "GET /internal/v1/quotes/BBDCG189" in payload["endpoints"]
+    assert payload["mt5"]["connected"] is True
+    assert payload["machine"]["cpu_count"] is not None
+
+
+def test_quote_cache_reuses_recent_quote() -> None:
+    fake_client = FakeMt5Client()
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        hmac_key_scopes="edge-1=quotes:read|symbols:read",
+        quote_cache_ttl_ms=500,
+    )
+    app = create_test_app(settings=settings, market_data_client=fake_client)
+    client = TestClient(app)
+
+    headers_1 = auth_headers(
+        secret="super-secret",
+        method="GET",
+        path="/internal/v1/quotes/BBDCG189",
+        query="include_raw=false",
+    )
+    response_1 = client.get("/internal/v1/quotes/BBDCG189?include_raw=false", headers=headers_1)
+    assert response_1.status_code == 200
+
+    headers_2 = auth_headers(
+        secret="super-secret",
+        method="GET",
+        path="/internal/v1/quotes/BBDCG189",
+        query="include_raw=false",
+    )
+    response_2 = client.get("/internal/v1/quotes/BBDCG189?include_raw=false", headers=headers_2)
+    assert response_2.status_code == 200
+    assert fake_client.tick_calls == 1
+
+
+def test_quote_requests_are_coalesced_for_same_symbol() -> None:
+    fake_client = FakeMt5Client()
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        quote_cache_ttl_ms=0,
+    )
+    service = create_test_app(settings=settings, market_data_client=fake_client).state.market_data_service
+
+    original = fake_client.symbol_info_tick
+
+    def slow_tick(symbol):
+        time.sleep(0.2)
+        return original(symbol)
+
+    fake_client.symbol_info_tick = slow_tick
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(service.get_quote, symbol="BBDCG189", include_raw=False) for _ in range(5)]
+        results = [future.result(timeout=5) for future in futures]
+
+    assert all(result.symbol == "BBDCG189" for result in results)
+    assert fake_client.tick_calls == 1
+
+
+def test_batch_reuses_quote_for_duplicate_symbols() -> None:
+    fake_client = FakeMt5Client()
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        hmac_key_scopes="edge-1=quotes:read|symbols:read",
+        quote_cache_ttl_ms=0,
+    )
+    app = create_test_app(settings=settings, market_data_client=fake_client)
+    client = TestClient(app)
+
+    body = b'{"symbols":["BBDCG189","BBDCG189","INVALID1"],"include_raw":false}'
+    headers = auth_headers(
+        secret="super-secret",
+        method="POST",
+        path="/internal/v1/quotes/batch",
+        body=body,
+    )
+    headers["Content-Type"] = "application/json"
+    response = client.post("/internal/v1/quotes/batch", headers=headers, content=body)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count_total"] == 3
+    assert payload["count_success"] == 2
+    assert payload["count_error"] == 1
+    assert payload["items"][0]["ok"] is True
+    assert payload["items"][1]["ok"] is True
+    assert payload["items"][2]["ok"] is False
+    assert fake_client.tick_calls == 1

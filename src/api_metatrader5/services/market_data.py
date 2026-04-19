@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import threading
+import time
 from typing import Any
 
 from ..core.config import Settings
 from ..core.errors import AppError, MarketDataUnavailableError, SymbolNotFoundError
 from ..schemas.market import BatchQuoteItem, BatchQuoteResponse, QuoteResponse, SymbolSearchItem
-from .mt5_client import Mt5ClientProtocol
+from .market_data_client import MarketDataClientProtocol
 
 
 class MarketDataService:
-    def __init__(self, *, settings: Settings, client: Mt5ClientProtocol) -> None:
+    def __init__(self, *, settings: Settings, client: MarketDataClientProtocol) -> None:
         self.settings = settings
         self.client = client
+        self._quote_cache_lock = threading.Lock()
+        self._quote_cache: dict[tuple[str, bool], tuple[float, QuoteResponse]] = {}
+        self._inflight_lock = threading.Lock()
+        self._inflight_quotes: dict[tuple[str, bool], _InflightQuote] = {}
 
     def readiness(self) -> dict[str, Any]:
         try:
@@ -20,6 +26,9 @@ class MarketDataService:
         except Exception as exc:
             return {
                 "status": "not_ready",
+                "provider": "btg_trader_desk",
+                "connected": False,
+                "state": "error",
                 "mt5_connected": False,
                 "mt5_state": "error",
                 "details": {
@@ -31,6 +40,9 @@ class MarketDataService:
         status = self.client.connection_status()
         return {
             "status": "ready",
+            "provider": status.get("provider", "btg_trader_desk"),
+            "connected": bool(status.get("connected")),
+            "state": status.get("state", "connected"),
             "mt5_connected": bool(status.get("connected")),
             "mt5_state": status.get("state", "connected"),
             "reconnect_count": status.get("reconnect_count", 0),
@@ -40,39 +52,66 @@ class MarketDataService:
 
     def get_quote(self, *, symbol: str, include_raw: bool = True) -> QuoteResponse:
         requested_symbol = self._normalize_symbol(symbol)
-        resolved_symbol, symbol_info = self._resolve_symbol_info(requested_symbol)
-        tick_info = self._get_tick_with_select_retry(resolved_symbol)
-        if not tick_info:
+        cached = self._get_cached_quote(requested_symbol, include_raw)
+        if cached is not None:
+            return cached
+
+        inflight, owner = self._acquire_inflight(requested_symbol, include_raw)
+        if not owner:
+            inflight.event.wait()
+            if inflight.error is not None:
+                raise inflight.error
+            if inflight.quote is not None:
+                return inflight.quote
             raise MarketDataUnavailableError(
                 "No tick data available for symbol.",
-                details={"symbol": resolved_symbol},
+                details={"symbol": requested_symbol},
             )
 
-        time_utc = self._tick_timestamp(tick_info)
-        return QuoteResponse(
-            requested_symbol=requested_symbol,
-            symbol=resolved_symbol,
-            description=self._as_text(symbol_info.get("description")),
-            path=self._as_text(symbol_info.get("path")),
-            currency_base=self._as_text(symbol_info.get("currency_base")),
-            currency_profit=self._as_text(symbol_info.get("currency_profit")),
-            currency_margin=self._as_text(symbol_info.get("currency_margin")),
-            bid=self._as_float(tick_info.get("bid")),
-            ask=self._as_float(tick_info.get("ask")),
-            last=self._as_float(tick_info.get("last")),
-            volume=self._as_int(tick_info.get("volume")),
-            volume_real=self._as_float(tick_info.get("volume_real")),
-            digits=self._as_int(symbol_info.get("digits")),
-            point=self._as_float(symbol_info.get("point")),
-            spread=self._as_int(symbol_info.get("spread")),
-            spread_float=self._as_bool(symbol_info.get("spread_float")),
-            visible=self._as_bool(symbol_info.get("visible")),
-            trade_mode=self._as_int(symbol_info.get("trade_mode")),
-            time_utc=time_utc,
-            time_msc=self._as_int(tick_info.get("time_msc")),
-            raw_tick=tick_info if include_raw else None,
-            raw_symbol=symbol_info if include_raw else None,
-        )
+        resolved_symbol, symbol_info = self._resolve_symbol_info(requested_symbol)
+        try:
+            tick_info = self._get_tick_with_select_retry(resolved_symbol)
+            if not tick_info:
+                raise MarketDataUnavailableError(
+                    "No tick data available for symbol.",
+                    details={"symbol": resolved_symbol},
+                )
+
+            time_utc = self._tick_timestamp(tick_info)
+            quote = QuoteResponse(
+                requested_symbol=requested_symbol,
+                symbol=resolved_symbol,
+                description=self._as_text(symbol_info.get("description")),
+                path=self._as_text(symbol_info.get("path")),
+                currency_base=self._as_text(symbol_info.get("currency_base")),
+                currency_profit=self._as_text(symbol_info.get("currency_profit")),
+                currency_margin=self._as_text(symbol_info.get("currency_margin")),
+                bid=self._as_float(tick_info.get("bid")),
+                ask=self._as_float(tick_info.get("ask")),
+                last=self._as_float(tick_info.get("last")),
+                volume=self._as_int(tick_info.get("volume")),
+                volume_real=self._as_float(tick_info.get("volume_real")),
+                digits=self._as_int(symbol_info.get("digits")),
+                point=self._as_float(symbol_info.get("point")),
+                spread=self._as_int(symbol_info.get("spread")),
+                spread_float=self._as_bool(symbol_info.get("spread_float")),
+                visible=self._as_bool(symbol_info.get("visible")),
+                trade_mode=self._as_int(symbol_info.get("trade_mode")),
+                time_utc=time_utc,
+                time_msc=self._as_int(tick_info.get("time_msc")),
+                raw_tick=tick_info if include_raw else None,
+                raw_symbol=symbol_info if include_raw else None,
+                source="btg-trader-desk",
+            )
+            self._store_cached_quote(requested_symbol, include_raw, quote)
+            inflight.quote = quote
+            return quote
+        except Exception as exc:
+            if isinstance(exc, AppError):
+                inflight.error = exc
+            raise
+        finally:
+            self._release_inflight(requested_symbol, include_raw, inflight)
 
     def search_symbols(self, *, query: str, limit: int) -> list[SymbolSearchItem]:
         normalized = self._normalize_symbol(query)
@@ -107,11 +146,14 @@ class MarketDataService:
         items: list[BatchQuoteItem] = []
         success_count = 0
         error_count = 0
+        resolved_items: dict[str, QuoteResponse | AppError] = {}
         for symbol in symbols:
             requested_symbol = self._normalize_symbol(symbol)
-            try:
-                quote = self.get_quote(symbol=symbol, include_raw=include_raw)
-            except AppError as exc:
+            cached_result = resolved_items.get(requested_symbol)
+            if isinstance(cached_result, QuoteResponse):
+                quote = cached_result
+            elif isinstance(cached_result, AppError):
+                exc = cached_result
                 error_count += 1
                 items.append(
                     BatchQuoteItem(
@@ -126,6 +168,26 @@ class MarketDataService:
                     )
                 )
                 continue
+            else:
+                try:
+                    quote = self.get_quote(symbol=symbol, include_raw=include_raw)
+                    resolved_items[requested_symbol] = quote
+                except AppError as exc:
+                    resolved_items[requested_symbol] = exc
+                    error_count += 1
+                    items.append(
+                        BatchQuoteItem(
+                            requested_symbol=requested_symbol,
+                            ok=False,
+                            quote=None,
+                            error={
+                                "code": exc.code,
+                                "message": exc.message,
+                                "details": exc.details,
+                            },
+                        )
+                    )
+                    continue
 
             success_count += 1
             items.append(
@@ -179,7 +241,7 @@ class MarketDataService:
                     return resolved_symbol, symbol_info
 
         raise SymbolNotFoundError(
-            "Symbol not found in MetaTrader5.",
+            "Symbol not found in configured market data provider.",
             details={"symbol": requested_symbol},
         )
 
@@ -193,6 +255,54 @@ class MarketDataService:
         if tick_info and self._has_meaningful_tick(tick_info):
             return tick_info
         return None
+
+    def _get_cached_quote(self, symbol: str, include_raw: bool) -> QuoteResponse | None:
+        ttl_ms = max(0, int(self.settings.quote_cache_ttl_ms))
+        if ttl_ms <= 0:
+            return None
+        now = time.monotonic()
+        cache_key = (symbol, include_raw)
+        with self._quote_cache_lock:
+            cached = self._quote_cache.get(cache_key)
+            if cached is None:
+                return None
+            expires_at, quote = cached
+            if expires_at < now:
+                self._quote_cache.pop(cache_key, None)
+                return None
+            return quote
+
+    def _store_cached_quote(self, symbol: str, include_raw: bool, quote: QuoteResponse) -> None:
+        ttl_ms = max(0, int(self.settings.quote_cache_ttl_ms))
+        if ttl_ms <= 0:
+            return
+        cache_key = (symbol, include_raw)
+        expires_at = time.monotonic() + (ttl_ms / 1000.0)
+        with self._quote_cache_lock:
+            self._quote_cache[cache_key] = (expires_at, quote)
+
+    def _acquire_inflight(self, symbol: str, include_raw: bool) -> tuple["_InflightQuote", bool]:
+        cache_key = (symbol, include_raw)
+        with self._inflight_lock:
+            existing = self._inflight_quotes.get(cache_key)
+            if existing is not None:
+                return existing, False
+            inflight = _InflightQuote()
+            self._inflight_quotes[cache_key] = inflight
+            return inflight, True
+
+    def _release_inflight(
+        self,
+        symbol: str,
+        include_raw: bool,
+        inflight: "_InflightQuote",
+    ) -> None:
+        cache_key = (symbol, include_raw)
+        inflight.event.set()
+        with self._inflight_lock:
+            current = self._inflight_quotes.get(cache_key)
+            if current is inflight:
+                self._inflight_quotes.pop(cache_key, None)
 
     @staticmethod
     def _has_meaningful_tick(tick_info: dict[str, Any]) -> bool:
@@ -257,3 +367,10 @@ class MarketDataService:
         if value is None:
             return None
         return bool(value)
+
+
+class _InflightQuote:
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.quote: QuoteResponse | None = None
+        self.error: AppError | None = None

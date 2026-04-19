@@ -1,36 +1,49 @@
 # api-metatrader5
 
-Gateway privado em `FastAPI` para ler dados do `MetaTrader 5` em tempo quase real e preparar o fluxo futuro de envio de ordens.
+Gateway privado em `FastAPI` para expor cotações do `BTG Trader Desk` via HTTP com autenticação `HMAC`.
 
-Arquitetura recomendada:
-
-- `mt5-gateway` rodando na maquina Windows com o terminal MT5.
-- API publica e WebSocket publicados na VPS.
-- VPS e Windows conectados por rede privada (`Tailscale` ou `WireGuard`).
-- Trafego VPS -> gateway protegido com `HMAC`.
+O nome do repositório foi mantido, mas o backend de mercado desta fase deixou de usar `MetaTrader 5` e passou a usar o endpoint local do `BTG Trader Desk` em `127.0.0.1:9099`.
 
 ## Escopo atual
 
-Implementado neste repositório:
+Implementado:
 
 - `GET /health`
 - `GET /ready`
 - `GET /internal/v1/quotes/{symbol}`
 - `POST /internal/v1/quotes/batch`
 - `GET /internal/v1/symbols/search`
-- `POST /internal/v1/orders/preview`
-- `POST /internal/v1/orders`
+- `GET /internal/v1/metrics`
 
-Observações:
+Mantido no contrato, mas ainda não suportado pelo backend BTG desta fase:
 
-- `orders` fica desabilitado por padrão. Para permitir `order_send`, defina `MT5_ENABLE_ORDER_SEND=1`.
-- O endpoint de quotes já retorna campos principais e também os blocos `raw_tick` e `raw_symbol` para facilitar a primeira fase de integração.
-- `GET /ready` devolve apenas estado operacional resumido do gateway e do MT5, sem expor dados detalhados de conta e terminal.
-- `POST /internal/v1/quotes/batch` devolve sucesso parcial por símbolo, evitando falha total do lote.
+- `POST /internal/v1/orders/preview` -> responde `501 not_supported`
+- `POST /internal/v1/orders` -> responde `501 not_supported`
+
+## Como funciona
+
+- o `BTG Trader Desk` abre um endpoint TCP local
+- o gateway autentica nesse endpoint com handshake textual e token local
+- os campos `QUOTE.*` são convertidos para o contrato HTTP já existente
+- o consumidor continua falando com esta API via HMAC
+
+Campos BTG validados neste ambiente:
+
+- `QUOTE.LAST_TRADE_PRICE`
+- `QUOTE.BID_PRICE`
+- `QUOTE.ASK_PRICE`
+- `QUOTE.CHANGE_PERCENT`
+- `QUOTE.VOLUME`
+- `QUOTE.LAST_TRADE_TIME`
+- `QUOTE.STATUS`
+
+Ticker de opção validado com sucesso neste ambiente:
+
+- `ITUBE542`
 
 ## Requisitos
 
-- Windows com terminal `MetaTrader 5` instalado.
+- Windows com `BTG Trader Desk` instalado e aberto
 - Python `3.13+`
 - `uv`
 
@@ -40,6 +53,38 @@ Observações:
 uv sync --extra dev
 Copy-Item .env.example .env
 ```
+
+## Configuração
+
+Variáveis principais:
+
+- `APP_HOST`
+- `APP_PORT`
+- `MT5_GATEWAY_KEY_ID`
+- `MT5_GATEWAY_SHARED_SECRET`
+- `MT5_GATEWAY_SCOPES`
+- `BTG_TRADER_DESK_HOST`
+- `BTG_TRADER_DESK_PORT`
+- `BTG_TRADER_DESK_TOKEN`
+- `BTG_TRADER_DESK_TIMEOUT_SECONDS`
+- `BTG_TRADER_DESK_SYMBOLS_FILE`
+- `BTG_TRADER_DESK_CURRENCY`
+- `BTG_TRADER_DESK_DEFAULT_DIGITS`
+- `QUOTE_CACHE_TTL_MS`
+- `MT5_SYMBOL_ALIASES`
+
+Observações:
+
+- `BTG_TRADER_DESK_TOKEN` é obrigatório para o handshake TCP
+- `BTG_TRADER_DESK_SYMBOLS_FILE` é opcional e alimenta `GET /internal/v1/symbols/search`
+- sem catálogo local, `symbols/search` só encontra símbolos que já estejam no cache do gateway ou nos aliases configurados
+- `QUOTE_CACHE_TTL_MS` controla o cache curto de cotações no gateway. `0` desliga o cache.
+
+Configuração prática recomendada para esta máquina:
+
+- `BTG_TRADER_DESK_HOST=127.0.0.1`
+- `BTG_TRADER_DESK_PORT=9099`
+- `QUOTE_CACHE_TTL_MS=250`
 
 ## Execução
 
@@ -53,86 +98,84 @@ Ou:
 uv run uvicorn api_metatrader5.app:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-Para desenvolvimento local, `127.0.0.1` e aceito.
-Em produção, use o IP privado da malha `Tailscale` ou `WireGuard` e bloqueie acesso publico.
+## Contrato HTTP
 
-## Rotina operacional
+Quote unitário:
 
-Scripts PowerShell para operação manual no Windows:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-gateway.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\stop-gateway.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\restart-gateway.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\status-gateway.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\check-gateway.ps1
+```text
+GET /internal/v1/quotes/PETR4
 ```
 
-Os scripts usam o `.env` atual, gravam logs em `logs\` e reutilizam o bind configurado em `APP_HOST` e `APP_PORT`.
+Lote:
 
-Para rodar como serviço Windows com auto-start e restart automático, use `NSSM`:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install-gateway-service.ps1 -NssmPath 'C:\caminho\para\nssm.exe'
-powershell -ExecutionPolicy Bypass -File .\scripts\service-status.ps1
+```json
+POST /internal/v1/quotes/batch
+{
+  "symbols": ["PETR4", "VALE3"],
+  "include_raw": false
+}
 ```
 
-Estado operacional validado neste ambiente:
+Busca:
 
-- serviço Windows: `mt5-gateway`
-- startup: `Auto`
-- bind operacional: `http://100.70.177.96:8000`
-- health check:
-  - `GET /health` => `200`
-  - `GET /ready` => `200`
-
-Comandos operacionais principais:
-
-```powershell
-Start-Service mt5-gateway
-Stop-Service mt5-gateway
-Restart-Service mt5-gateway
-powershell -ExecutionPolicy Bypass -File .\scripts\service-status.ps1
-Invoke-RestMethod http://100.70.177.96:8000/health | ConvertTo-Json -Depth 6
-Invoke-RestMethod http://100.70.177.96:8000/ready | ConvertTo-Json -Depth 6
-& 'C:\Program Files\Tailscale\tailscale.exe' ip -4
+```text
+GET /internal/v1/symbols/search?q=PETR&limit=20
 ```
 
-Firewall operacional recomendado e aplicado:
+Readiness:
 
-- regra: `mt5-gateway-tailscale-8000`
-- direção: `Inbound`
-- ação: `Allow`
-- perfil: `Private`
-- destino: `TCP 8000`
-- origem esperada: VPS `100.109.190.88`
+```json
+GET /ready
+{
+  "status": "ready",
+  "provider": "btg_trader_desk",
+  "connected": true,
+  "state": "connected",
+  "mt5_connected": true,
+  "mt5_state": "connected",
+  "reconnect_count": 0,
+  "last_connected_at": 1712350000.0,
+  "last_error": null
+}
+```
+
+Os campos `mt5_connected` e `mt5_state` foram preservados por compatibilidade com consumidores anteriores, mas agora refletem o backend BTG.
+
+## Estratégia recomendada para o consumidor
+
+Para a outra aplicação usar este gateway da forma mais performática possível:
+
+- preferir `POST /internal/v1/quotes/batch` quando houver mais de um símbolo por ciclo
+- evitar rajadas de `GET` unitário para dezenas de símbolos ao mesmo tempo
+- se precisar de quote unitário frequente do mesmo ticker, deixar o polling dentro de janelas curtas para aproveitar `QUOTE_CACHE_TTL_MS`
+- manter `include_raw=false` por padrão
+- evitar símbolos repetidos em lotes, embora o gateway já deduplique repetições dentro do mesmo batch
+- agrupar consultas por ciclo de atualização, em vez de disparar uma request por componente visual
+- tratar `symbols/search` como apoio operacional, não como chamada de alta frequência
+
+Padrão recomendado no consumidor:
+
+1. montar a lista única de símbolos do ciclo
+2. enviar um único `quotes/batch`
+3. distribuir o resultado internamente para telas, regras e cálculos
+4. repetir no próximo ciclo respeitando a cadência desejada
+
+Padrão a evitar:
+
+- uma request HTTP por card/tela/widget
+- múltiplas requests simultâneas para o mesmo ticker
+- polling agressivo com `include_raw=true`
 
 ## Autenticação HMAC
 
-O gateway aceita duas formas de configurar o segredo:
-
-- simples, para um único consumidor: `MT5_GATEWAY_KEY_ID` + `MT5_GATEWAY_SHARED_SECRET`
-- avançada, para rotação ou múltiplas chaves: `HMAC_SHARED_KEYS`
-
-Se `HMAC_SHARED_KEYS` estiver definido, ele tem precedência.
-
-Para autorização por rota, os escopos suportados são:
-
-- `quotes:read`
-- `symbols:read`
-- `orders:preview`
-- `orders:send`
-
-Com uma única chave via `MT5_GATEWAY_SHARED_SECRET`, o default recomendado é liberar apenas `quotes:read`, `symbols:read` e `orders:preview`.
-
-Os endpoints em `/internal/*` exigem estes headers:
+Os endpoints em `/internal/*` exigem:
 
 - `X-Key-Id`
 - `X-Timestamp`
 - `X-Nonce`
 - `X-Signature`
 
-String canônica assinada:
+String canônica:
 
 ```text
 {METHOD}\n
@@ -143,200 +186,170 @@ String canônica assinada:
 {BODY_SHA256_HEX}
 ```
 
-Onde:
-
-- `METHOD`: verbo HTTP em maiúsculas
-- `PATH`: caminho da URL, ex. `/internal/v1/quotes/BBDCG189`
-- `QUERY`: query string bruta, sem `?`
-- `TIMESTAMP`: Unix epoch em segundos UTC
-- `NONCE`: identificador único por requisição
-- `BODY_SHA256_HEX`: hash SHA-256 do corpo bruto
-
 Assinatura:
 
 ```text
 hex(HMAC_SHA256(secret, canonical_string))
 ```
 
-## Exemplos de uso
+Escopos suportados:
 
-Quote unitário:
+- `quotes:read`
+- `symbols:read`
+- `orders:preview`
+- `orders:send`
+- `metrics:read`
+
+## Símbolos e catálogo local
+
+O protocolo BTG validado até agora entrega bem `quotes`, mas não foi mapeado como fonte de catálogo completo de símbolos.
+
+Para `GET /internal/v1/symbols/search`, o gateway aceita um arquivo local em `BTG_TRADER_DESK_SYMBOLS_FILE`:
+
+- `.csv` com colunas `symbol`, `description`, `path`, `digits`, ...
+- ou `.txt` com um ticker por linha
+
+Exemplo simples:
 
 ```text
-GET /internal/v1/quotes/BBDCG189
+PETR4
+VALE3
+PETRD410
+VALEK920
 ```
 
-Quotes em lote:
+## Observabilidade
 
-```json
-POST /internal/v1/quotes/batch
-{
-  "symbols": ["BBDCG189", "VALEK92"]
-}
-```
+O endpoint:
 
-Resposta parcial esperada:
+- `GET /internal/v1/metrics`
 
-```json
-{
-  "items": [
-    {
-      "requested_symbol": "BBDCG189",
-      "ok": true,
-      "quote": {
-        "requested_symbol": "BBDCG189",
-        "symbol": "BBDCG189",
-        "ask": 1.91,
-        "bid": 1.9,
-        "source": "metatrader5"
-      },
-      "error": null
-    },
-    {
-      "requested_symbol": "VALEK92",
-      "ok": false,
-      "quote": null,
-      "error": {
-        "code": "symbol_not_found",
-        "message": "Symbol not found in MetaTrader5.",
-        "details": {
-          "symbol": "VALEK92"
-        }
-      }
-    }
-  ],
-  "count_total": 2,
-  "count_success": 1,
-  "count_error": 1
-}
-```
+expõe:
 
-Preview de ordem:
+- métricas em memória por endpoint
+- snapshot do provedor BTG
+- snapshot básico da máquina
 
-```json
-POST /internal/v1/orders/preview
-{
-  "symbol": "VALEK92",
-  "side": "buy",
-  "order_type": "limit",
-  "volume": 100,
-  "price": 1.25,
-  "client_order_id": "preview-001"
-}
-```
+Campos úteis para acompanhamento:
 
-Readiness enxuto:
+- `global.requests`
+- `global.errors`
+- `global.latency_ms.avg`
+- `global.latency_ms.p95`
+- métricas por endpoint em `endpoints`
+- estado do backend em `provider`
 
-```json
-GET /ready
-{
-  "status": "ready",
-  "mt5_connected": true,
-  "mt5_state": "connected",
-  "reconnect_count": 0,
-  "last_connected_at": 1712350000.0,
-  "last_error": null
-}
-```
+## Cache de quotes
 
-## Variáveis de ambiente
+O gateway agora suporta cache curto em memória por símbolo e por variante de `include_raw`.
 
-- `APP_ENV`
-- `APP_LOG_LEVEL`
-- `APP_HOST`
-- `APP_PORT`
-- `APP_LOG_FILE`
-- `APP_LOG_MAX_BYTES`
-- `APP_LOG_BACKUP_COUNT`
-- `MT5_GATEWAY_KEY_ID`
-- `MT5_GATEWAY_SHARED_SECRET`
-- `MT5_GATEWAY_SCOPES`
-- `HMAC_SHARED_KEYS`
-- `HMAC_KEY_SCOPES`
-- `HMAC_ALLOWED_CLOCK_SKEW_SECONDS`
-- `HMAC_NONCE_TTL_SECONDS`
-- `MT5_SYMBOL_ALIASES`
-- `MT5_TERMINAL_PATH`
-- `MT5_LOGIN`
-- `MT5_PASSWORD`
-- `MT5_SERVER`
-- `MT5_DEFAULT_DEVIATION`
-- `MT5_MAGIC_NUMBER`
-- `MT5_ORDER_COMMENT_PREFIX`
-- `MT5_ENABLE_ORDER_SEND`
-- `MT5_RECONNECT_MAX_ATTEMPTS`
-- `MT5_RECONNECT_BACKOFF_SECONDS`
-- `MT5_CONNECTION_PROBE_INTERVAL_SECONDS`
+Configuração:
+
+- `QUOTE_CACHE_TTL_MS=250`
+
+Leitura prática:
+
+- use `0` para desligar
+- use `100` a `300` ms quando quiser aliviar o backend BTG sem perder muito frescor
+- o ganho é maior quando o mesmo ticker é consultado em rajadas curtas
+
+## Coalescência de requests
+
+Além do cache, o gateway também faz coalescência por `(symbol, include_raw)`:
+
+- se várias requests simultâneas do mesmo ticker chegarem ao mesmo tempo, apenas uma consulta real vai ao BTG
+- as demais aguardam o mesmo resultado
+- isso melhora especialmente cenários com vários consumidores internos pedindo o mesmo ativo
+
+O endpoint `quotes/batch` também deduplica símbolos repetidos dentro do mesmo lote.
+
+## Estudos de carga
+
+Os testes abaixo foram feitos em HTTP real contra o gateway local, com `HMAC`, backend `BTG Trader Desk` e o ticker `ITUBE542`.
+
+### Linha de base
+
+Sem cache e sem coalescência:
+
+- concorrência `1`: `0.76 rps`, média `1308 ms`
+- concorrência `5`: `4.13 rps`, média `1176 ms`
+- concorrência `10`: `7.26 rps`, média `1281 ms`
+- concorrência `20`: `11.94 rps`, média `1495 ms`
+- concorrência `30`: `8.46 rps`, média `3145 ms`
+- concorrência `40`: `7.75 rps`, média `3425 ms`
+
+Leitura:
+
+- o throughput cresceu até perto de `20` concorrências
+- acima disso a latência subiu muito e o throughput começou a piorar
+
+### Com cache curto
+
+Com `QUOTE_CACHE_TTL_MS=250`:
+
+- concorrência `1`: `2.16 rps`, média `463 ms`, `p50 29 ms`
+- concorrência `5`: `6.96 rps`, média `684 ms`, `p50 127 ms`
+- concorrência `10`: `7.31 rps`, média `931 ms`
+- concorrência `20`: `11.22 rps`, média `1563 ms`
+- concorrência `30`: `13.07 rps`, média `1927 ms`
+- concorrência `40`: `13.85 rps`, média `2345 ms`
+
+Leitura:
+
+- o maior ganho apareceu quando houve repetição forte do mesmo ticker
+- em baixa concorrência o cache derrubou bastante a latência mediana
+
+### Com cache + coalescência
+
+Com `QUOTE_CACHE_TTL_MS=250` e coalescência de requests simultâneos:
+
+- concorrência `1`: `2.17 rps`, média `461 ms`, `p50 26 ms`
+- concorrência `5`: `7.23 rps`, média `664 ms`, `p50 118 ms`
+- concorrência `10`: `7.12 rps`, média `1237 ms`
+- concorrência `20`: `11.42 rps`, média `1581 ms`
+- concorrência `30`: `14.18 rps`, média `1832 ms`
+- concorrência `40`: `16.75 rps`, média `1970 ms`
+
+Leitura:
+
+- o ganho mais forte ficou nas rajadas do mesmo símbolo
+- em alta concorrência a fila ficou menor que na linha de base
+- a API continuou estável sem erro nas rodadas válidas
+
+### Limite operacional sugerido
+
+Faixa recomendada para produção nesta máquina:
+
+- conservador: `5` a `10` requests simultâneas
+- confortável: até `20` requests simultâneas
+- tolerável em pico, com repetição forte do mesmo ticker: `30+`
+
+Resumo prático:
+
+- para quote unitário, trate `10` a `20` concorrências como faixa saudável
+- para muitos símbolos, prefira `quotes/batch`
+- para o mesmo ticker em rajadas, o gateway já está otimizado com cache + coalescência
+- acima de `30`, ainda funciona, mas já entra em faixa de latência alta para uso muito sensível a tempo real
 
 ## Testes
 
 ```powershell
-uv run pytest -q
+.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
 ```
 
-## Operação em máquina dedicada
+Resultado validado nesta fase:
 
-Se esta máquina ficar dedicada apenas ao `mt5-gateway`, a disputa com outros processos deixa de ser o fator principal. Nesse cenário, o limite real tende a vir da própria stack:
+- `13 passed`
 
-- `FastAPI` + `uvicorn`
-- validação `HMAC`
-- integração com o terminal `MetaTrader 5`
+## Limitações atuais
 
-Leitura prática para capacidade inicial:
-
-- trate `50` requisições concorrentes como uma faixa inicial segura para começar a operar
-- entre `50` e `100` concorrências a latência já tende a subir de forma perceptível
-- acima disso, o throughput pode parar de crescer e a fila de resposta começa a degradar
-
-Importante:
-
-- testes em memória medem bem o custo da API, autenticação e serialização
-- eles não representam rede real, `uvicorn` em processo real nem o comportamento do terminal `MT5`
-- o gargalo verdadeiro pode aparecer no `MetaTrader 5` antes da API
-
-Recomendação operacional:
-
-- validar em ambiente real com `uvicorn` rodando localmente
-- repetir o benchmark com o terminal `MT5` aberto, logado e consultando símbolos reais
-- definir limite operacional por latência `p95`, não apenas por throughput bruto
-- se o consumidor gerar rajadas, preferir agregação de cotações e controle de concorrência
-
-Alvo inicial sugerido:
-
-- `p95 < 200 ms` para consulta simples de quote
-- taxa de erro `0%`
-- uso de CPU estável, sem saturação prolongada
-
-Resumo objetivo:
-
-- máquina dedicada ajuda bastante
-- mesmo assim, o limite seguro deve ser validado com HTTP real e `MT5` real
-- até essa medição final, considere `50` concorrências como ponto inicial conservador
-
-## Deploy operacional
-
-O guia de operação e deploy ficou separado para facilitar uso no dia a dia:
-
-- [docs/deploy-operacao.md](docs/deploy-operacao.md)
-
-Esse material cobre:
-
-- execução como serviço no Windows
-- auto-start no boot
-- restart automático
-- bind apenas no IP privado da malha
-- firewall
-- `.env` fora do repositório
-- checklist de go-live em fases
-
-## Integracao com a VPS
-
-Referencia pratica para o backend Flask assinar chamadas HMAC:
-
-- `docs/flask-edge-integration.md`
+- ordens ainda não foram mapeadas no protocolo do `BTG Trader Desk`
+- `symbols/search` depende de catálogo local para busca ampla
+- o token e o protocolo TCP do Trader Desk devem ser tratados como detalhe operacional local e podem mudar após atualização do aplicativo
+- o maior gargalo atual está no tempo de resposta do `BTG Trader Desk`, não no `FastAPI`
 
 ## Próximas etapas
 
-- integrar este gateway à edge API da VPS
-- adicionar WebSocket no edge
-- persistir alias de símbolos e auditoria de ordens no PostgreSQL da VPS
+- consolidar um catálogo local confiável de ações e opções
+- investigar protocolo de ordens do `BTG Trader Desk`
+- decidir se o repositório também deve ser renomeado para refletir o backend BTG

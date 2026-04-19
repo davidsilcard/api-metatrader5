@@ -36,9 +36,19 @@ class MarketDataUnavailableError(AppError):
     code = "market_data_unavailable"
 
 
+class ProviderConnectionError(AppError):
+    status_code = 503
+    code = "market_data_connection_error"
+
+
 class Mt5ConnectionError(AppError):
     status_code = 503
     code = "mt5_connection_error"
+
+
+class NotSupportedError(AppError):
+    status_code = 501
+    code = "not_supported"
 
 
 def register_exception_handlers(app: FastAPI) -> None:

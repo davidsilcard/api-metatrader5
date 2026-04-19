@@ -29,7 +29,7 @@ class QuoteResponse(BaseModel):
     time_msc: int | None = None
     raw_tick: dict[str, Any] | None = None
     raw_symbol: dict[str, Any] | None = None
-    source: str = "metatrader5"
+    source: str = "btg-trader-desk"
 
 
 class BatchQuoteRequest(BaseModel):

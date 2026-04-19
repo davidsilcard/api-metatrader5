@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Any
 from typing import Dict
 
 from pydantic import SecretStr, field_validator
@@ -31,24 +32,20 @@ class Settings(BaseSettings):
     hmac_nonce_ttl_seconds: int = 300
     mt5_gateway_key_id: str = "edge-1"
     mt5_gateway_shared_secret: SecretStr | None = None
-    mt5_gateway_scopes: str = "quotes:read,symbols:read,orders:preview"
+    mt5_gateway_scopes: str = "quotes:read,symbols:read,orders:preview,metrics:read"
 
-    mt5_terminal_path: str | None = None
-    mt5_login: int | None = None
-    mt5_password: SecretStr | None = None
-    mt5_server: str | None = None
     mt5_symbol_aliases: str = ""
-    mt5_default_deviation: int = 20
-    mt5_magic_number: int = 500001
-    mt5_order_comment_prefix: str = "api-metatrader5"
-    mt5_enable_order_send: bool = False
-    mt5_reconnect_max_attempts: int = 3
-    mt5_reconnect_backoff_seconds: float = 1.0
-    mt5_connection_probe_interval_seconds: int = 5
+    btg_trader_desk_host: str = "127.0.0.1"
+    btg_trader_desk_port: int = 9099
+    btg_trader_desk_token: SecretStr | None = None
+    btg_trader_desk_timeout_seconds: float = 2.0
+    btg_trader_desk_symbols_file: str | None = None
+    btg_trader_desk_currency: str = "BRL"
+    btg_trader_desk_default_digits: int = 2
+    quote_cache_ttl_ms: int = 250
 
     @field_validator(
-        "mt5_terminal_path",
-        "mt5_server",
+        "btg_trader_desk_symbols_file",
         "app_log_file",
         mode="before",
     )
@@ -59,16 +56,7 @@ class Settings(BaseSettings):
         text = str(value).strip()
         return text or None
 
-    @field_validator("mt5_login", mode="before")
-    @classmethod
-    def _empty_string_to_none_int(cls, value: object) -> object:
-        if value is None:
-            return None
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
-
-    @field_validator("mt5_password", mode="before")
+    @field_validator("btg_trader_desk_token", mode="before")
     @classmethod
     def _empty_string_to_none_secret(cls, value: object) -> object:
         if value is None:
@@ -76,6 +64,16 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @field_validator("quote_cache_ttl_ms", mode="before")
+    @classmethod
+    def _normalize_cache_ttl(cls, value: Any) -> int:
+        if value is None:
+            return 250
+        if isinstance(value, str) and not value.strip():
+            return 250
+        ttl = int(value)
+        return max(0, ttl)
 
     @field_validator("mt5_gateway_key_id", mode="before")
     @classmethod

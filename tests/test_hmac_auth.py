@@ -185,7 +185,7 @@ def test_quotes_endpoint_accepts_mt5_gateway_secret_fallback() -> None:
         hmac_shared_keys="",
         mt5_gateway_key_id="consumer-app",
         mt5_gateway_shared_secret="super-secret",
-        mt5_gateway_scopes="quotes:read,symbols:read",
+        mt5_gateway_scopes="quotes:read,symbols:read,metrics:read",
     )
     app = create_test_app(settings=settings, mt5_client=FakeMt5Client())
     client = TestClient(app)
