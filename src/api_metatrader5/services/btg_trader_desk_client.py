@@ -259,7 +259,7 @@ class BtgTraderDeskClient:
 
         try:
             fields = self._query_fields(normalized)
-        except ProviderConnectionError:
+        except (ProviderConnectionError, ProviderTimeoutError):
             raise
         except Exception as exc:
             self._mark_connection_failure(exc=exc)

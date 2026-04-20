@@ -9,6 +9,7 @@ from api_metatrader5.app import create_test_app
 from api_metatrader5.core.config import Settings
 from api_metatrader5.core.errors import ProviderTimeoutError
 from api_metatrader5.security.hmac_auth import build_canonical_message, sha256_hex, sign_message
+from api_metatrader5.services.btg_trader_desk_client import BtgTraderDeskClient
 
 
 class FakeMt5Client:
@@ -414,3 +415,20 @@ def test_timeout_is_negative_cached_for_repeated_symbol() -> None:
 
     assert fake_client.tick_calls == 0
     assert fake_client.timeout_tick_calls == 1
+
+
+def test_btg_client_preserves_timeout_error() -> None:
+    client = BtgTraderDeskClient(settings=Settings(btg_trader_desk_token="token"))
+
+    def raise_timeout(symbol: str):
+        raise ProviderTimeoutError("Provider timeout", details={"symbol": symbol})
+
+    client._query_fields = raise_timeout
+
+    try:
+        client.symbol_info_tick("WIZCD983")
+    except ProviderTimeoutError as exc:
+        assert exc.code == "timeout"
+        assert exc.details["symbol"] == "WIZCD983"
+    else:
+        raise AssertionError("ProviderTimeoutError was not propagated")
