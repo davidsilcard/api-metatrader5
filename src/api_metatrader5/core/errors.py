@@ -41,6 +41,11 @@ class ProviderConnectionError(AppError):
     code = "market_data_connection_error"
 
 
+class ProviderTimeoutError(AppError):
+    status_code = 504
+    code = "timeout"
+
+
 class Mt5ConnectionError(AppError):
     status_code = 503
     code = "mt5_connection_error"

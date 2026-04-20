@@ -55,6 +55,7 @@ class BatchQuoteResponse(BaseModel):
     count_total: int
     count_success: int
     count_error: int
+    partial: bool = False
 
 
 class SymbolSearchItem(BaseModel):

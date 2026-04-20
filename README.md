@@ -67,24 +67,30 @@ Variáveis principais:
 - `BTG_TRADER_DESK_PORT`
 - `BTG_TRADER_DESK_TOKEN`
 - `BTG_TRADER_DESK_TIMEOUT_SECONDS`
+- `BTG_TRADER_DESK_SYMBOL_TIMEOUT_SECONDS`
 - `BTG_TRADER_DESK_SYMBOLS_FILE`
 - `BTG_TRADER_DESK_CURRENCY`
 - `BTG_TRADER_DESK_DEFAULT_DIGITS`
 - `QUOTE_CACHE_TTL_MS`
+- `QUOTE_NEGATIVE_CACHE_TTL_MS`
 - `MT5_SYMBOL_ALIASES`
 
 Observações:
 
 - `BTG_TRADER_DESK_TOKEN` é obrigatório para o handshake TCP
+- `BTG_TRADER_DESK_SYMBOL_TIMEOUT_SECONDS` define o orçamento total por símbolo no provider BTG
 - `BTG_TRADER_DESK_SYMBOLS_FILE` é opcional e alimenta `GET /internal/v1/symbols/search`
 - sem catálogo local, `symbols/search` só encontra símbolos que já estejam no cache do gateway ou nos aliases configurados
 - `QUOTE_CACHE_TTL_MS` controla o cache curto de cotações no gateway. `0` desliga o cache.
+- `QUOTE_NEGATIVE_CACHE_TTL_MS` controla o cache curto de timeout por símbolo para evitar repetir consulta travada em rajadas.
 
 Configuração prática recomendada para esta máquina:
 
 - `BTG_TRADER_DESK_HOST=127.0.0.1`
 - `BTG_TRADER_DESK_PORT=9099`
+- `BTG_TRADER_DESK_SYMBOL_TIMEOUT_SECONDS=3.0`
 - `QUOTE_CACHE_TTL_MS=250`
+- `QUOTE_NEGATIVE_CACHE_TTL_MS=1000`
 
 ## Execução
 
@@ -144,6 +150,37 @@ POST /internal/v1/quotes/batch
 }
 ```
 
+Contrato do batch:
+
+- o gateway retorna `200` quando conseguir processar o lote item a item
+- se um símbolo específico travar no provider BTG, o lote volta como sucesso parcial
+- cada item problemático retorna `ok=false` com `error.code`, `error.message` e `error.details.symbol`
+- erro global só deve acontecer quando o lote inteiro não puder ser processado
+
+Exemplo parcial:
+
+```json
+{
+  "items": [
+    {"requested_symbol": "WIZC3", "ok": true, "quote": {"symbol": "WIZC3"}, "error": null},
+    {
+      "requested_symbol": "WIZCD983",
+      "ok": false,
+      "quote": null,
+      "error": {
+        "code": "timeout",
+        "message": "Provider timeout",
+        "details": {"symbol": "WIZCD983"}
+      }
+    }
+  ],
+  "count_total": 2,
+  "count_success": 1,
+  "count_error": 1,
+  "partial": true
+}
+```
+
 Busca:
 
 ```text
@@ -176,6 +213,7 @@ Para a outra aplicação usar este gateway da forma mais performática possível
 - preferir `POST /internal/v1/quotes/batch` quando houver mais de um símbolo por ciclo
 - evitar rajadas de `GET` unitário para dezenas de símbolos ao mesmo tempo
 - se precisar de quote unitário frequente do mesmo ticker, deixar o polling dentro de janelas curtas para aproveitar `QUOTE_CACHE_TTL_MS`
+- tratar `error.code=timeout` em nível de item no batch, sem derrubar o ciclo inteiro do consumidor
 - manter `include_raw=false` por padrão
 - evitar símbolos repetidos em lotes, embora o gateway já deduplique repetições dentro do mesmo batch
 - agrupar consultas por ciclo de atualização, em vez de disparar uma request por componente visual

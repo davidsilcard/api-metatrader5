@@ -39,10 +39,12 @@ class Settings(BaseSettings):
     btg_trader_desk_port: int = 9099
     btg_trader_desk_token: SecretStr | None = None
     btg_trader_desk_timeout_seconds: float = 2.0
+    btg_trader_desk_symbol_timeout_seconds: float = 3.0
     btg_trader_desk_symbols_file: str | None = None
     btg_trader_desk_currency: str = "BRL"
     btg_trader_desk_default_digits: int = 2
     quote_cache_ttl_ms: int = 250
+    quote_negative_cache_ttl_ms: int = 1000
 
     @field_validator(
         "btg_trader_desk_symbols_file",
@@ -74,6 +76,30 @@ class Settings(BaseSettings):
             return 250
         ttl = int(value)
         return max(0, ttl)
+
+    @field_validator("quote_negative_cache_ttl_ms", mode="before")
+    @classmethod
+    def _normalize_negative_cache_ttl(cls, value: Any) -> int:
+        if value is None:
+            return 1000
+        if isinstance(value, str) and not value.strip():
+            return 1000
+        ttl = int(value)
+        return max(0, ttl)
+
+    @field_validator(
+        "btg_trader_desk_timeout_seconds",
+        "btg_trader_desk_symbol_timeout_seconds",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_timeout_seconds(cls, value: Any) -> float:
+        if value is None:
+            return 0.0
+        if isinstance(value, str) and not value.strip():
+            return 0.0
+        timeout = float(value)
+        return max(0.1, timeout)
 
     @field_validator("mt5_gateway_key_id", mode="before")
     @classmethod

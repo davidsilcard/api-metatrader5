@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from api_metatrader5.app import create_test_app
 from api_metatrader5.core.config import Settings
+from api_metatrader5.core.errors import ProviderTimeoutError
 from api_metatrader5.security.hmac_auth import build_canonical_message, sha256_hex, sign_message
 
 
@@ -118,6 +119,44 @@ class FakeMt5Client:
         return constants[name]
 
 
+class TimeoutSymbolClient(FakeMt5Client):
+    def __init__(self) -> None:
+        super().__init__()
+        self.timeout_tick_calls = 0
+
+    def symbol_info(self, symbol):
+        if symbol == "WIZCD983":
+            return {
+                "name": symbol,
+                "description": symbol,
+                "currency_base": "BRL",
+                "currency_profit": "BRL",
+                "currency_margin": "BRL",
+                "digits": 2,
+                "point": 0.01,
+                "spread": 0,
+                "spread_float": True,
+                "visible": True,
+                "trade_mode": 4,
+                "path": "B3\\Options",
+            }
+        return super().symbol_info(symbol)
+
+    def symbol_select(self, symbol, enable):
+        if symbol == "WIZCD983":
+            return True
+        return super().symbol_select(symbol, enable)
+
+    def symbol_info_tick(self, symbol):
+        if symbol == "WIZCD983":
+            self.timeout_tick_calls += 1
+            raise ProviderTimeoutError(
+                "Provider timeout",
+                details={"symbol": symbol},
+            )
+        return super().symbol_info_tick(symbol)
+
+
 def auth_headers(*, secret: str, method: str, path: str, query: str = "", body: bytes = b"") -> dict[str, str]:
     timestamp = str(int(time.time()))
     nonce = f"nonce-{time.time_ns()}"
@@ -180,10 +219,44 @@ def test_batch_quotes_returns_partial_success() -> None:
     assert payload["count_total"] == 2
     assert payload["count_success"] == 1
     assert payload["count_error"] == 1
+    assert payload["partial"] is True
     assert payload["items"][0]["ok"] is True
     assert payload["items"][0]["quote"]["raw_tick"] is None
     assert payload["items"][1]["ok"] is False
     assert payload["items"][1]["error"]["code"] == "symbol_not_found"
+
+
+def test_batch_quotes_isolates_timeout_per_symbol() -> None:
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        hmac_key_scopes="edge-1=quotes:read|symbols:read",
+        quote_negative_cache_ttl_ms=1000,
+    )
+    app = create_test_app(settings=settings, market_data_client=TimeoutSymbolClient())
+    client = TestClient(app)
+
+    body = b'{"symbols":["BBDCG189","WIZCD983","BBDCG189"],"include_raw":false}'
+    headers = auth_headers(
+        secret="super-secret",
+        method="POST",
+        path="/internal/v1/quotes/batch",
+        body=body,
+    )
+    headers["Content-Type"] = "application/json"
+    response = client.post("/internal/v1/quotes/batch", headers=headers, content=body)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count_total"] == 3
+    assert payload["count_success"] == 2
+    assert payload["count_error"] == 1
+    assert payload["partial"] is True
+    assert payload["items"][0]["ok"] is True
+    assert payload["items"][1]["ok"] is False
+    assert payload["items"][1]["error"]["code"] == "timeout"
+    assert payload["items"][1]["error"]["message"] == "Provider timeout"
+    assert payload["items"][1]["error"]["details"]["symbol"] == "WIZCD983"
+    assert payload["items"][2]["ok"] is True
 
 
 def test_search_symbols_uses_query() -> None:
@@ -318,7 +391,26 @@ def test_batch_reuses_quote_for_duplicate_symbols() -> None:
     assert payload["count_total"] == 3
     assert payload["count_success"] == 2
     assert payload["count_error"] == 1
+    assert payload["partial"] is True
     assert payload["items"][0]["ok"] is True
     assert payload["items"][1]["ok"] is True
     assert payload["items"][2]["ok"] is False
     assert fake_client.tick_calls == 1
+
+
+def test_timeout_is_negative_cached_for_repeated_symbol() -> None:
+    fake_client = TimeoutSymbolClient()
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        quote_negative_cache_ttl_ms=1000,
+    )
+    service = create_test_app(settings=settings, market_data_client=fake_client).state.market_data_service
+
+    for _ in range(2):
+        try:
+            service.get_quote(symbol="WIZCD983", include_raw=False)
+        except ProviderTimeoutError:
+            pass
+
+    assert fake_client.tick_calls == 0
+    assert fake_client.timeout_tick_calls == 1

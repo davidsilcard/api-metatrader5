@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import fnmatch
+import logging
 import socket
 import threading
 import time
@@ -10,7 +11,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..core.config import Settings
-from ..core.errors import ProviderConnectionError
+from ..core.errors import ProviderConnectionError, ProviderTimeoutError
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,12 +65,17 @@ class _TraderDeskSession:
             if self.sock is not None:
                 self.sock.close()
 
-    def query(self, topic: str, symbol: str) -> str | None:
+    def query(self, topic: str, symbol: str, *, deadline: float | None = None) -> str | None:
         expected_prefix = f"{topic}|{symbol}|"
         for _ in range(2):
+            self._ensure_deadline(deadline=deadline, symbol=symbol, topic=topic)
             self._writeline(f"{topic}|{symbol}")
-            time.sleep(0.15)
-            payloads = self._read_available_payloads()
+            pause_seconds = 0.15
+            if deadline is not None:
+                pause_seconds = min(pause_seconds, max(0.0, deadline - time.monotonic()))
+            if pause_seconds > 0:
+                time.sleep(pause_seconds)
+            payloads = self._read_available_payloads(deadline=deadline, symbol=symbol, topic=topic)
             for payload in payloads:
                 if payload.startswith(expected_prefix):
                     return payload[len(expected_prefix) :]
@@ -85,12 +94,22 @@ class _TraderDeskSession:
             raise ProviderConnectionError("BTG Trader Desk session is not open.")
         self.file.write((line + "\n").encode("utf-8"))
 
-    def _read_available_payloads(self) -> list[str]:
+    def _read_available_payloads(
+        self,
+        *,
+        deadline: float | None = None,
+        symbol: str,
+        topic: str,
+    ) -> list[str]:
         if self.sock is None:
             raise ProviderConnectionError("BTG Trader Desk session is not open.")
         raw_lines: list[str] = []
         while True:
+            self._ensure_deadline(deadline=deadline, symbol=symbol, topic=topic)
             try:
+                if deadline is not None:
+                    remaining = max(0.05, min(self.timeout, deadline - time.monotonic()))
+                    self.sock.settimeout(remaining)
                 data = self.sock.recv(4096)
             except socket.timeout:
                 break
@@ -102,6 +121,17 @@ class _TraderDeskSession:
             if len(data) < 4096:
                 break
         return list(self._split_payloads(raw_lines))
+
+    @staticmethod
+    def _ensure_deadline(*, deadline: float | None, symbol: str, topic: str) -> None:
+        if deadline is None:
+            return
+        if time.monotonic() <= deadline:
+            return
+        raise ProviderTimeoutError(
+            "Provider timeout",
+            details={"symbol": symbol, "topic": topic},
+        )
 
     @staticmethod
     def _split_payloads(lines: Iterable[str]) -> Iterable[str]:
@@ -290,13 +320,33 @@ class BtgTraderDeskClient:
 
     def _query_fields(self, symbol: str) -> dict[str, str | None]:
         token = self._token()
+        deadline = time.monotonic() + self.settings.btg_trader_desk_symbol_timeout_seconds
+        result = {key: None for key in self.QUOTE_FIELD_MAP}
         with self._open_session(token=token) as session:
-            result = {
-                key: session.query(topic, symbol)
-                for key, topic in self.QUOTE_FIELD_MAP.items()
-            }
+            for key, topic in self.QUOTE_FIELD_MAP.items():
+                try:
+                    result[key] = session.query(topic, symbol, deadline=deadline)
+                except ProviderTimeoutError as exc:
+                    if self._has_market_data(result):
+                        logger.warning(
+                            "BTG symbol query exceeded timeout budget after partial data.",
+                            extra={"symbol": symbol, "topic": topic},
+                        )
+                        break
+                    logger.warning(
+                        "BTG symbol query timed out.",
+                        extra={"symbol": symbol, "topic": topic},
+                    )
+                    raise ProviderTimeoutError(
+                        "Provider timeout",
+                        details={"symbol": symbol, "topic": topic},
+                    ) from exc
         self._mark_probe_success()
         return result
+
+    @staticmethod
+    def _has_market_data(fields: dict[str, str | None]) -> bool:
+        return any(fields.get(key) not in {None, ""} for key in ("last", "bid", "ask", "volume"))
 
     def _catalog_rows(self) -> list[dict[str, Any]]:
         if self._catalog_cache is not None:

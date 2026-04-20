@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import logging
 import threading
 import time
 from typing import Any
 
 from ..core.config import Settings
-from ..core.errors import AppError, MarketDataUnavailableError, SymbolNotFoundError
+from ..core.errors import AppError, MarketDataUnavailableError, ProviderTimeoutError, SymbolNotFoundError
 from ..schemas.market import BatchQuoteItem, BatchQuoteResponse, QuoteResponse, SymbolSearchItem
 from .market_data_client import MarketDataClientProtocol
+
+
+logger = logging.getLogger(__name__)
 
 
 class MarketDataService:
@@ -17,6 +21,7 @@ class MarketDataService:
         self.client = client
         self._quote_cache_lock = threading.Lock()
         self._quote_cache: dict[tuple[str, bool], tuple[float, QuoteResponse]] = {}
+        self._negative_cache: dict[tuple[str, bool], tuple[float, AppError]] = {}
         self._inflight_lock = threading.Lock()
         self._inflight_quotes: dict[tuple[str, bool], _InflightQuote] = {}
 
@@ -55,6 +60,9 @@ class MarketDataService:
         cached = self._get_cached_quote(requested_symbol, include_raw)
         if cached is not None:
             return cached
+        cached_error = self._get_cached_negative_quote(requested_symbol, include_raw)
+        if cached_error is not None:
+            raise cached_error
 
         inflight, owner = self._acquire_inflight(requested_symbol, include_raw)
         if not owner:
@@ -108,6 +116,8 @@ class MarketDataService:
             return quote
         except Exception as exc:
             if isinstance(exc, AppError):
+                if isinstance(exc, ProviderTimeoutError):
+                    self._store_negative_quote(requested_symbol, include_raw, exc)
                 inflight.error = exc
             raise
         finally:
@@ -174,6 +184,11 @@ class MarketDataService:
                     resolved_items[requested_symbol] = quote
                 except AppError as exc:
                     resolved_items[requested_symbol] = exc
+                    if isinstance(exc, ProviderTimeoutError):
+                        logger.warning(
+                            "Batch quote item timed out.",
+                            extra={"symbol": requested_symbol},
+                        )
                     error_count += 1
                     items.append(
                         BatchQuoteItem(
@@ -204,6 +219,7 @@ class MarketDataService:
             count_total=len(items),
             count_success=success_count,
             count_error=error_count,
+            partial=success_count > 0 and error_count > 0,
         )
 
     def resolve_symbol_name(self, symbol: str) -> str:
@@ -280,6 +296,31 @@ class MarketDataService:
         expires_at = time.monotonic() + (ttl_ms / 1000.0)
         with self._quote_cache_lock:
             self._quote_cache[cache_key] = (expires_at, quote)
+
+    def _get_cached_negative_quote(self, symbol: str, include_raw: bool) -> AppError | None:
+        ttl_ms = max(0, int(self.settings.quote_negative_cache_ttl_ms))
+        if ttl_ms <= 0:
+            return None
+        now = time.monotonic()
+        cache_key = (symbol, include_raw)
+        with self._quote_cache_lock:
+            cached = self._negative_cache.get(cache_key)
+            if cached is None:
+                return None
+            expires_at, error = cached
+            if expires_at < now:
+                self._negative_cache.pop(cache_key, None)
+                return None
+            return error
+
+    def _store_negative_quote(self, symbol: str, include_raw: bool, error: AppError) -> None:
+        ttl_ms = max(0, int(self.settings.quote_negative_cache_ttl_ms))
+        if ttl_ms <= 0:
+            return
+        cache_key = (symbol, include_raw)
+        expires_at = time.monotonic() + (ttl_ms / 1000.0)
+        with self._quote_cache_lock:
+            self._negative_cache[cache_key] = (expires_at, error)
 
     def _acquire_inflight(self, symbol: str, include_raw: bool) -> tuple["_InflightQuote", bool]:
         cache_key = (symbol, include_raw)
