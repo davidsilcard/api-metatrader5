@@ -10,6 +10,7 @@ from api_metatrader5.core.config import Settings
 from api_metatrader5.core.errors import ProviderTimeoutError
 from api_metatrader5.security.hmac_auth import build_canonical_message, sha256_hex, sign_message
 from api_metatrader5.services.btg_trader_desk_client import BtgTraderDeskClient
+from api_metatrader5.services.market_data import _InflightQuote
 
 
 class FakeMt5Client:
@@ -432,3 +433,25 @@ def test_btg_client_preserves_timeout_error() -> None:
         assert exc.details["symbol"] == "WIZCD983"
     else:
         raise AssertionError("ProviderTimeoutError was not propagated")
+
+
+def test_quote_inflight_wait_times_out_and_clears_stale_entry() -> None:
+    fake_client = FakeMt5Client()
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        btg_trader_desk_symbol_timeout_seconds=0.1,
+    )
+    service = create_test_app(settings=settings, market_data_client=fake_client).state.market_data_service
+    inflight = _InflightQuote()
+    service._inflight_quotes[("WIZCD983", False)] = inflight
+
+    try:
+        service.get_quote(symbol="WIZCD983", include_raw=False)
+    except ProviderTimeoutError as exc:
+        assert exc.code == "timeout"
+        assert exc.details["symbol"] == "WIZCD983"
+        assert exc.details["stage"] == "inflight_wait"
+    else:
+        raise AssertionError("ProviderTimeoutError was not raised")
+
+    assert ("WIZCD983", False) not in service._inflight_quotes

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 
@@ -23,6 +24,7 @@ from .services.order_service import OrderService
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings)
+    logger = logging.getLogger("api_metatrader5.app")
     market_data_client = BtgTraderDeskClient(settings=settings)
     market_data_service = MarketDataService(settings=settings, client=market_data_client)
     monitoring_service = MonitoringService(market_data_client=market_data_client)
@@ -37,6 +39,16 @@ def create_app() -> FastAPI:
     app.state.market_data_service = market_data_service
     app.state.monitoring_service = monitoring_service
     app.state.order_service = order_service
+
+    logger.info(
+        "app_started pid=%s cwd=%s app_file=%s host=%s port=%s version=%s",
+        os.getpid(),
+        os.getcwd(),
+        __file__,
+        settings.app_host,
+        settings.app_port,
+        settings.app_version,
+    )
 
     register_exception_handlers(app)
     _register_request_logging(app)
@@ -123,4 +135,6 @@ def _register_request_logging(app: FastAPI) -> None:
             getattr(request.client, "host", "-"),
         )
         response.headers["X-Request-Id"] = request_id
+        response.headers["X-App-Version"] = app.state.settings.app_version
+        response.headers["X-App-Pid"] = str(os.getpid())
         return response

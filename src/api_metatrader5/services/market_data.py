@@ -57,16 +57,52 @@ class MarketDataService:
 
     def get_quote(self, *, symbol: str, include_raw: bool = True) -> QuoteResponse:
         requested_symbol = self._normalize_symbol(symbol)
+        started = time.perf_counter()
+        logger.info(
+            "quote_start symbol=%s include_raw=%s",
+            requested_symbol,
+            include_raw,
+        )
         cached = self._get_cached_quote(requested_symbol, include_raw)
         if cached is not None:
+            logger.info(
+                "quote_cache_hit symbol=%s duration_ms=%s",
+                requested_symbol,
+                round((time.perf_counter() - started) * 1000, 2),
+            )
             return cached
         cached_error = self._get_cached_negative_quote(requested_symbol, include_raw)
         if cached_error is not None:
+            logger.info(
+                "quote_negative_cache_hit symbol=%s code=%s duration_ms=%s",
+                requested_symbol,
+                cached_error.code,
+                round((time.perf_counter() - started) * 1000, 2),
+            )
             raise cached_error
 
         inflight, owner = self._acquire_inflight(requested_symbol, include_raw)
         if not owner:
-            inflight.event.wait()
+            wait_timeout = self._inflight_wait_timeout_seconds()
+            logger.info(
+                "quote_inflight_wait symbol=%s timeout_seconds=%s",
+                requested_symbol,
+                wait_timeout,
+            )
+            completed = inflight.event.wait(timeout=wait_timeout)
+            if not completed:
+                timeout_error = ProviderTimeoutError(
+                    "Provider timeout",
+                    details={"symbol": requested_symbol, "stage": "inflight_wait"},
+                )
+                self._store_negative_quote(requested_symbol, include_raw, timeout_error)
+                self._drop_stale_inflight(requested_symbol, include_raw, inflight)
+                logger.warning(
+                    "quote_inflight_wait_timeout symbol=%s timeout_seconds=%s",
+                    requested_symbol,
+                    wait_timeout,
+                )
+                raise timeout_error
             if inflight.error is not None:
                 raise inflight.error
             if inflight.quote is not None:
@@ -113,12 +149,25 @@ class MarketDataService:
             )
             self._store_cached_quote(requested_symbol, include_raw, quote)
             inflight.quote = quote
+            logger.info(
+                "quote_success symbol=%s resolved_symbol=%s duration_ms=%s",
+                requested_symbol,
+                resolved_symbol,
+                round((time.perf_counter() - started) * 1000, 2),
+            )
             return quote
         except Exception as exc:
             if isinstance(exc, AppError):
                 if isinstance(exc, ProviderTimeoutError):
                     self._store_negative_quote(requested_symbol, include_raw, exc)
                 inflight.error = exc
+            logger.warning(
+                "quote_error symbol=%s error_type=%s message=%s duration_ms=%s",
+                requested_symbol,
+                exc.__class__.__name__,
+                str(exc),
+                round((time.perf_counter() - started) * 1000, 2),
+            )
             raise
         finally:
             self._release_inflight(requested_symbol, include_raw, inflight)
@@ -153,6 +202,13 @@ class MarketDataService:
         return items
 
     def get_quotes_batch(self, *, symbols: list[str], include_raw: bool) -> BatchQuoteResponse:
+        started = time.perf_counter()
+        logger.info(
+            "batch_start count=%s include_raw=%s symbols=%s",
+            len(symbols),
+            include_raw,
+            ",".join(self._normalize_symbol(symbol) for symbol in symbols),
+        )
         items: list[BatchQuoteItem] = []
         success_count = 0
         error_count = 0
@@ -179,9 +235,15 @@ class MarketDataService:
                 )
                 continue
             else:
+                item_started = time.perf_counter()
                 try:
                     quote = self.get_quote(symbol=symbol, include_raw=include_raw)
                     resolved_items[requested_symbol] = quote
+                    logger.info(
+                        "batch_item_success symbol=%s duration_ms=%s",
+                        requested_symbol,
+                        round((time.perf_counter() - item_started) * 1000, 2),
+                    )
                 except AppError as exc:
                     resolved_items[requested_symbol] = exc
                     if isinstance(exc, ProviderTimeoutError):
@@ -189,6 +251,12 @@ class MarketDataService:
                             "Batch quote item timed out.",
                             extra={"symbol": requested_symbol},
                         )
+                    logger.warning(
+                        "batch_item_error symbol=%s code=%s duration_ms=%s",
+                        requested_symbol,
+                        exc.code,
+                        round((time.perf_counter() - item_started) * 1000, 2),
+                    )
                     error_count += 1
                     items.append(
                         BatchQuoteItem(
@@ -214,13 +282,22 @@ class MarketDataService:
                 )
             )
 
-        return BatchQuoteResponse(
+        response = BatchQuoteResponse(
             items=items,
             count_total=len(items),
             count_success=success_count,
             count_error=error_count,
             partial=success_count > 0 and error_count > 0,
         )
+        logger.info(
+            "batch_finished count_total=%s count_success=%s count_error=%s partial=%s duration_ms=%s",
+            response.count_total,
+            response.count_success,
+            response.count_error,
+            response.partial,
+            round((time.perf_counter() - started) * 1000, 2),
+        )
+        return response
 
     def resolve_symbol_name(self, symbol: str) -> str:
         requested_symbol = self._normalize_symbol(symbol)
@@ -344,6 +421,21 @@ class MarketDataService:
             current = self._inflight_quotes.get(cache_key)
             if current is inflight:
                 self._inflight_quotes.pop(cache_key, None)
+
+    def _drop_stale_inflight(
+        self,
+        symbol: str,
+        include_raw: bool,
+        inflight: "_InflightQuote",
+    ) -> None:
+        cache_key = (symbol, include_raw)
+        with self._inflight_lock:
+            current = self._inflight_quotes.get(cache_key)
+            if current is inflight and not inflight.event.is_set():
+                self._inflight_quotes.pop(cache_key, None)
+
+    def _inflight_wait_timeout_seconds(self) -> float:
+        return max(1.0, float(self.settings.btg_trader_desk_symbol_timeout_seconds) + 0.5)
 
     @staticmethod
     def _has_meaningful_tick(tick_info: dict[str, Any]) -> bool:
