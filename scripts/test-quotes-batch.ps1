@@ -133,7 +133,7 @@ if (-not $BaseUrl) {
 $BaseUrl = $BaseUrl.TrimEnd("/")
 $credential = Get-HmacCredential
 $path = "/internal/v1/quotes/batch"
-$normalizedSymbols = Get-NormalizedSymbols -Values $Symbols
+$normalizedSymbols = @(Get-NormalizedSymbols -Values $Symbols)
 if ($normalizedSymbols.Count -eq 0) {
     throw "Informe ao menos um ticker em -Symbols."
 }
