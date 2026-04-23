@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-from pathlib import Path
 import threading
 import time
+from pathlib import Path
 
 from api_metatrader5.core.config import Settings
 from api_metatrader5.services.btg_trader_desk_client import BtgTraderDeskClient
 
 
 class FakeBtgTraderDeskClient(BtgTraderDeskClient):
+    def __init__(self, *, settings: Settings) -> None:
+        super().__init__(settings=settings)
+        self.query_count = 0
+
     def _query_fields(self, symbol: str) -> dict[str, str | None]:
+        self.query_count += 1
         if symbol == "PETR4":
             return {
                 "last": "46.25",
@@ -46,6 +51,23 @@ def test_btg_symbol_info_tick_parses_quote_fields() -> None:
     assert tick["ask"] == 46.23
     assert tick["volume"] == 12345
     assert tick["status"] == "OPEN"
+
+
+def test_btg_symbol_info_tick_reuses_recent_tick_from_symbol_info() -> None:
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        btg_trader_desk_token="token",
+        quote_cache_ttl_ms=500,
+    )
+    client = FakeBtgTraderDeskClient(settings=settings)
+
+    symbol_info = client.symbol_info("PETR4")
+    tick = client.symbol_info_tick("PETR4")
+
+    assert symbol_info is not None
+    assert tick is not None
+    assert tick["last"] == 46.25
+    assert client.query_count == 1
 
 
 def test_btg_symbols_get_uses_catalog_file() -> None:

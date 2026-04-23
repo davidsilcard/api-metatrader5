@@ -13,7 +13,6 @@ from typing import Any, Iterable
 from ..core.config import Settings
 from ..core.errors import ProviderConnectionError, ProviderTimeoutError
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -160,6 +159,8 @@ class BtgTraderDeskClient:
         self._state = ProviderConnectionState()
         self._symbol_cache: dict[str, dict[str, Any]] = {}
         self._catalog_cache: list[dict[str, Any]] | None = None
+        self._tick_cache_lock = threading.Lock()
+        self._tick_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     def ensure_connected(self) -> None:
         token = self._token()
@@ -258,6 +259,10 @@ class BtgTraderDeskClient:
         if not normalized:
             return None
 
+        cached = self._get_cached_tick(normalized)
+        if cached is not None:
+            return cached
+
         try:
             fields = self._query_fields(normalized)
         except (ProviderConnectionError, ProviderTimeoutError):
@@ -277,7 +282,7 @@ class BtgTraderDeskClient:
             return None
 
         now = time.time()
-        return {
+        tick = {
             "bid": bid,
             "ask": ask,
             "last": last,
@@ -290,6 +295,8 @@ class BtgTraderDeskClient:
             "status": fields["status"],
             "source": "btg-trader-desk",
         }
+        self._store_cached_tick(normalized, tick)
+        return dict(tick)
 
     def symbol_select(self, symbol: str, enable: bool) -> bool:
         if not enable:
@@ -324,7 +331,12 @@ class BtgTraderDeskClient:
         deadline = time.monotonic() + self.settings.btg_trader_desk_symbol_timeout_seconds
         result = {key: None for key in self.QUOTE_FIELD_MAP}
         with self._rtd_lock:
-            return self._query_fields_locked(symbol=symbol, token=token, deadline=deadline, result=result)
+            return self._query_fields_locked(
+                symbol=symbol,
+                token=token,
+                deadline=deadline,
+                result=result,
+            )
 
     def _query_fields_locked(
         self,
@@ -358,7 +370,33 @@ class BtgTraderDeskClient:
 
     @staticmethod
     def _has_market_data(fields: dict[str, str | None]) -> bool:
-        return any(fields.get(key) not in {None, ""} for key in ("last", "bid", "ask", "volume"))
+        return any(
+            fields.get(key) not in {None, ""}
+            for key in ("last", "bid", "ask", "volume")
+        )
+
+    def _get_cached_tick(self, symbol: str) -> dict[str, Any] | None:
+        ttl_ms = max(0, int(self.settings.quote_cache_ttl_ms))
+        if ttl_ms <= 0:
+            return None
+        now = time.monotonic()
+        with self._tick_cache_lock:
+            cached = self._tick_cache.get(symbol)
+            if cached is None:
+                return None
+            expires_at, tick = cached
+            if expires_at < now:
+                self._tick_cache.pop(symbol, None)
+                return None
+            return dict(tick)
+
+    def _store_cached_tick(self, symbol: str, tick: dict[str, Any]) -> None:
+        ttl_ms = max(0, int(self.settings.quote_cache_ttl_ms))
+        if ttl_ms <= 0:
+            return
+        expires_at = time.monotonic() + (ttl_ms / 1000.0)
+        with self._tick_cache_lock:
+            self._tick_cache[symbol] = (expires_at, dict(tick))
 
     def _catalog_rows(self) -> list[dict[str, Any]]:
         if self._catalog_cache is not None:
@@ -384,18 +422,23 @@ class BtgTraderDeskClient:
                 symbol = self._normalize_symbol(raw.get("symbol") or raw.get("name"))
                 if not symbol:
                     continue
+                currency = self.settings.btg_trader_desk_currency
+                digits = (
+                    self._to_int(raw.get("digits"))
+                    or self.settings.btg_trader_desk_default_digits
+                )
                 rows.append(
                     {
                         "name": symbol,
                         "description": (raw.get("description") or symbol).strip(),
                         "path": (raw.get("path") or f"BTG\\SYMBOLS\\{symbol}").strip(),
-                        "currency_base": (raw.get("currency_base") or self.settings.btg_trader_desk_currency).strip(),
-                        "currency_profit": (raw.get("currency_profit") or self.settings.btg_trader_desk_currency).strip(),
-                        "currency_margin": (raw.get("currency_margin") or self.settings.btg_trader_desk_currency).strip(),
-                        "digits": self._to_int(raw.get("digits")) or self.settings.btg_trader_desk_default_digits,
+                        "currency_base": (raw.get("currency_base") or currency).strip(),
+                        "currency_profit": (raw.get("currency_profit") or currency).strip(),
+                        "currency_margin": (raw.get("currency_margin") or currency).strip(),
+                        "digits": digits,
                         "visible": self._to_bool(raw.get("visible"), default=True),
                         "trade_mode": self._to_int(raw.get("trade_mode")) or 4,
-                        "point": 10 ** (-(self._to_int(raw.get("digits")) or self.settings.btg_trader_desk_default_digits)),
+                        "point": 10 ** (-digits),
                         "spread": self._to_int(raw.get("spread")) or 0,
                         "spread_float": self._to_bool(raw.get("spread_float"), default=True),
                     }
