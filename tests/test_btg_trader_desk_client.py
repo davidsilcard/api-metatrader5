@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
+import time
 
 from api_metatrader5.core.config import Settings
 from api_metatrader5.services.btg_trader_desk_client import BtgTraderDeskClient
@@ -70,3 +72,44 @@ def test_btg_symbols_get_uses_catalog_file() -> None:
     finally:
         if catalog.exists():
             catalog.unlink()
+
+
+def test_btg_rtd_queries_are_serialized() -> None:
+    class SerializedClient(BtgTraderDeskClient):
+        def _query_fields_locked(self, *, symbol, token, deadline, result):
+            nonlocal active_queries, max_active_queries
+            with lock:
+                active_queries += 1
+                max_active_queries = max(max_active_queries, active_queries)
+            time.sleep(0.05)
+            with lock:
+                active_queries -= 1
+            return {
+                "last": "1.0",
+                "bid": "1.0",
+                "ask": "1.0",
+                "change_percent": None,
+                "volume": "1",
+                "last_trade_time": None,
+                "status": None,
+            }
+
+    settings = Settings(
+        hmac_shared_keys="edge-1=super-secret",
+        btg_trader_desk_token="token",
+    )
+    active_queries = 0
+    max_active_queries = 0
+    lock = threading.Lock()
+    client = SerializedClient(settings=settings)
+
+    threads = [
+        threading.Thread(target=client.symbol_info_tick, args=(f"OPT{i}",))
+        for i in range(5)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert max_active_queries == 1

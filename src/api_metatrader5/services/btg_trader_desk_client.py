@@ -156,6 +156,7 @@ class BtgTraderDeskClient:
     def __init__(self, *, settings: Settings) -> None:
         self.settings = settings
         self._lock = threading.Lock()
+        self._rtd_lock = threading.Lock()
         self._state = ProviderConnectionState()
         self._symbol_cache: dict[str, dict[str, Any]] = {}
         self._catalog_cache: list[dict[str, Any]] | None = None
@@ -322,6 +323,17 @@ class BtgTraderDeskClient:
         token = self._token()
         deadline = time.monotonic() + self.settings.btg_trader_desk_symbol_timeout_seconds
         result = {key: None for key in self.QUOTE_FIELD_MAP}
+        with self._rtd_lock:
+            return self._query_fields_locked(symbol=symbol, token=token, deadline=deadline, result=result)
+
+    def _query_fields_locked(
+        self,
+        *,
+        symbol: str,
+        token: str,
+        deadline: float,
+        result: dict[str, str | None],
+    ) -> dict[str, str | None]:
         with self._open_session(token=token) as session:
             for key, topic in self.QUOTE_FIELD_MAP.items():
                 try:
