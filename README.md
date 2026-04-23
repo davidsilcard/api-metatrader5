@@ -140,9 +140,15 @@ Para validar quotes com HMAC sem depender da aplicacao consumidora, use:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-quotes-batch.ps1 -Symbols PETR4,VALE3 -Repeat 1
 ```
 
+Para testar um unico ticker:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-quotes-batch.ps1 -Symbols PETRE500 -Repeat 1
+```
+
 O script chama `/ready` antes e depois do teste e envia um unico `quotes/batch`.
-Ele aceita `-Symbols PETR4,VALE3`, `-Repeat`, `-DelaySeconds`, `-TimeoutSeconds`
-e `-IncludeRaw`.
+Ele aceita um ticker unico ou uma lista separada por virgula em `-Symbols`, alem de
+`-Repeat`, `-DelaySeconds`, `-TimeoutSeconds` e `-IncludeRaw`.
 
 ## Contrato HTTP
 
