@@ -132,6 +132,18 @@ Resultado esperado:
 
 Se `/health` responder e `/ready` não ficar `ready`, o primeiro ponto a verificar é se o `BTG Trader Desk` está aberto e funcional.
 
+## Teste operacional de quotes
+
+Para validar quotes com HMAC sem depender da aplicacao consumidora, use:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-quotes-batch.ps1 -Symbols PETR4,VALE3 -Repeat 1
+```
+
+O script chama `/ready` antes e depois do teste e envia um unico `quotes/batch`.
+Ele aceita `-Symbols PETR4,VALE3`, `-Repeat`, `-DelaySeconds`, `-TimeoutSeconds`
+e `-IncludeRaw`.
+
 ## Contrato HTTP
 
 Quote unitário:
@@ -329,6 +341,27 @@ Além do cache, o gateway também faz coalescência por `(symbol, include_raw)`:
 
 O endpoint `quotes/batch` também deduplica símbolos repetidos dentro do mesmo lote.
 
+O cliente BTG tambem reutiliza por uma janela curta o tick recem-consultado ao montar
+`symbol_info`, evitando uma segunda consulta imediata ao Trader Desk no primeiro acesso
+ao mesmo simbolo.
+
+## Google Sheets
+
+E possivel testar o gateway a partir de uma planilha Google Sheets usando Apps Script
+e `POST /internal/v1/quotes/batch`.
+
+Guia pronto:
+
+- `docs/google-sheets-test.md`
+
+Observacoes importantes:
+
+- o Apps Script roda nos servidores do Google, entao nao acessa `127.0.0.1`, IP de LAN
+  ou Tailscale `100.x`
+- use uma URL HTTPS publica/proxy para o gateway e mantenha HMAC ativo
+- nao exponha a porta local `9099` do `BTG Trader Desk`
+- evite formula por celula; use lote unico por atualizacao
+
 ## Estudos de carga
 
 Os testes abaixo foram feitos em HTTP real contra o gateway local, com `HMAC`, backend `BTG Trader Desk` e o ticker `ITUBE542`.
@@ -405,7 +438,7 @@ Resumo prático:
 
 Resultado validado nesta fase:
 
-- `13 passed`
+- `19 passed`
 
 ## Limitações atuais
 
